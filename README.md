@@ -72,15 +72,42 @@ cmake --build build-asan
 **ESP-IDF 5.5 以上が必要です。** 公式 BSP が依存する `espressif/usb` は IDF 5.5 の HAL API を
 呼ぶため、5.4.2 ではビルドが通りません(詳細は [docs/M0-NOTES.md](docs/M0-NOTES.md))。
 
-```bash
-tools/idf.sh set-target esp32p4
-tools/idf.sh build                    # WSL から Windows 側の idf.py を呼ぶ
-tools/idf.sh -p COM7 flash            # 書き込みも WSL から通る
-python3 tools/serial_capture.py COM7  # シリアルログ(idf.py monitor は TTY 必須で使えない)
+Windows 側から `tools\idf.bat` で叩きます。`export.bat` を通してから `idf.py` を呼ぶだけのもので、
+どこから実行してもプロジェクトルートに移動します。
+
+```bat
+tools\idf.bat set-target esp32p4
+tools\idf.bat build
+tools\idf.bat -p COM7 flash
+tools\idf.bat -DFMSUI_DEMO=reorder -DFMSUI_ROWS=40 build
+```
+
+シリアルログは `idf.py monitor` が TTY を要求して使えないので、専用スクリプトを使います。
+
+```bat
+python tools\serial_capture.py COM7 20 --no-reset
+```
+
+`tools/idf.sh` は同じことを WSL 側からやりますが、**WSL の interop 登録が生きている間しか動きません**。
+`systemd=true` の環境では binfmt_misc の `WSLInterop` エントリが定期的に消え、そうなると
+`cmd.exe: Exec format error` で止まります。**実機のビルドを確実に通したいときは `idf.bat` を使ってください。**
+消えた登録は `sudo sh -c 'echo ":WSLInterop:M::MZ::/init:PF" > /proc/sys/fs/binfmt_misc/register'` で戻せます。
+
+インストール先が違う場合は環境変数で上書きできます。
+
+```bat
+set FMSUI_IDF=C:\esp\v5.5.4\esp-idf
+set IDF_TOOLS_PATH=C:\Espressif
 ```
 
 **ポートは COM7 です**(USB シリアルデバイス)。VS Code の `idf.portWin` が COM9 になっていることが
 ありますが、COM9 は Bluetooth のシリアルポートです。
+
+VS Code から実機ビルドする場合は、**汎用の CMake Tools 拡張にこのフォルダを触らせないでください**。
+ESP-IDF 環境を通さずに cmake を起動するため、`riscv32-esp-elf-gcc` が PATH に無い・ジェネレータが
+MSBuild になる・`$ENV{IDF_PATH}` 次第で別の ESP-IDF が読まれる、といった理由で失敗し、しかもその
+結果を `build/` に書くので `idf.py` 側のキャッシュまで壊れます。`.vscode/settings.json` で自動構成を
+切ってありますが、確実にするなら拡張機能ビューで Disable (Workspace) してください。
 
 実機の実測値は [docs/PERF.md](docs/PERF.md)、ブリングアップで踏んだ罠は
 [docs/M0-NOTES.md](docs/M0-NOTES.md) にあります。
@@ -103,7 +130,8 @@ python3 tools/serial_capture.py COM7  # シリアルログ(idf.py monitor は TT
 | `tools/gen_lv_conf.py` | `lv_conf.h` を LVGL のテンプレートから生成 |
 | `tools/gen_fonts.py` | TTF を LVGL のビットマップフォントに変換 |
 | `tools/serial_capture.py` | 実機のシリアルログを取る |
-| `tools/idf.sh` | WSL から Windows の ESP-IDF を叩く |
+| `tools/idf.bat` | Windows から ESP-IDF を叩く(実機ビルドの主経路) |
+| `tools/idf.sh` | 同じことを WSL から。interop が生きているときだけ動く |
 
 | ドキュメント | 中身 |
 |---|---|
