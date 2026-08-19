@@ -1,0 +1,49 @@
+# M5Stack Tab5 (ESP32-P4). Values follow M5's own shipping firmware where we
+# know them, so we start from a configuration the board is known to run at.
+
+CONFIG_IDF_TARGET="esp32p4"
+
+# --- Chip revision. This board's P4 is rev v1.0, but IDF 5.5 defaults its
+#     minimum to v3.1, and the bootloader then refuses to run. Revisions below
+#     3.0 and 3.x differ enough in hardware that IDF makes you choose one family
+#     or the other; ours is the older one. ---
+CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
+CONFIG_ESP32P4_REV_MIN_100=y
+
+# --- CPU / cache ---
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_360=y
+CONFIG_CACHE_L2_CACHE_256KB=y
+CONFIG_CACHE_L2_CACHE_LINE_128B=y
+
+# --- PSRAM: 32MB, HEX mode, 200MHz. The 1280x720 framebuffers cannot live
+#     anywhere else. XIP frees internal SRAM by executing from PSRAM. ---
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_HEX=y
+CONFIG_SPIRAM_SPEED_200M=y
+CONFIG_SPIRAM_XIP_FROM_PSRAM=y
+
+# --- Flash ---
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+
+# --- Build ---
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+CONFIG_FREERTOS_HZ=1000
+
+# --- Rotation. The panel is portrait; our UI is landscape. Hand the rotation to
+#     the P4's PPA rather than doing it on the CPU. Turn this off in menuconfig
+#     to measure what software rotation costs us. ---
+CONFIG_LVGL_PORT_ENABLE_PPA=y
+
+# --- Display buffers.
+#     esp_lvgl_port puts the two draw buffers in internal DMA-capable SRAM, and
+#     there is not much of it: 428kB free, largest block 248kB. Each buffer is
+#     720 * HEIGHT * 2 bytes, so HEIGHT=100 needs 144kB twice -- the first one
+#     fits, the second one cannot, and bsp_display_start() asserts.
+#     HEIGHT=50 gives 72kB per buffer, which is also what M5's own firmware ships
+#     with. Tune in M5 once there are frame-rate numbers to tune against. ---
+CONFIG_BSP_LCD_DPI_BUFFER_NUMS=1
+CONFIG_BSP_LCD_DRAW_BUF_HEIGHT=50
+CONFIG_BSP_LCD_DRAW_BUF_DOUBLE=y
+CONFIG_BSP_LCD_USE_DMA2D=y

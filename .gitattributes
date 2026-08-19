@@ -1,0 +1,17 @@
+# This project is built from Windows (ESP-IDF, idf.py) and from WSL (the SDL2
+# simulator, the unit tests) against the same working tree, and core.autocrlf is
+# true on the Windows side. Without this, tools/idf.sh is checked out with CRLF
+# and WSL refuses to run it: "bad interpreter: /usr/bin/env bash^M".
+#
+# So: normalise text to LF in the repository, and check it out as LF everywhere.
+* text=auto eol=lf
+
+# Batch files are the one thing that wants CRLF; cmd.exe is not reliable without
+# it once a file grows labels or multi-line blocks.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Never let line-ending conversion near these.
+*.ttf binary
+*.otf binary
+*.png binary

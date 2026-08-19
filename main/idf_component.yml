@@ -1,0 +1,9 @@
+dependencies:
+  # 5.5 rather than the BSP's declared 5.4: the BSP pulls in espressif/usb, whose
+  # every published version calls usb_dwc_hal_set_fifo_config() -- an API that
+  # only exists in IDF >= 5.5's HAL. See docs/M0-NOTES.md.
+  idf: ">=5.5"
+
+  # Board support for the M5Stack Tab5.  Probes I2C at boot to tell the two
+  # board revisions apart (ILI9881C + GT911, or the newer all-in-one ST7123).
+  espressif/m5stack_tab5: "^1.2.0"

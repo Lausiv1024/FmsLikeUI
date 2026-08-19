@@ -1,0 +1,64 @@
+cmake_minimum_required(VERSION 3.16)
+project(fmsui_sim LANGUAGES C CXX)
+
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Debug)
+endif()
+
+set(REPO_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/..)
+
+# Both targets read the same lv_conf.h the device build uses.
+# (LVGL 9.5 renamed these from LV_CONF_PATH / LV_CONF_BUILD_DISABLE_*.)
+set(LV_BUILD_CONF_PATH ${REPO_ROOT}/third_party/lv_conf.h CACHE FILEPATH "" FORCE)
+set(CONFIG_LV_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(CONFIG_LV_BUILD_DEMOS OFF CACHE BOOL "" FORCE)
+set(CONFIG_LV_USE_THORVG_INTERNAL OFF CACHE BOOL "" FORCE)
+add_subdirectory(${REPO_ROOT}/third_party/lvgl ${CMAKE_BINARY_DIR}/lvgl)
+
+add_subdirectory(${REPO_ROOT}/components/fmsui ${CMAKE_BINARY_DIR}/fmsui)
+add_subdirectory(${REPO_ROOT}/components/fmsui_fonts ${CMAKE_BINARY_DIR}/fmsui_fonts)
+
+find_package(SDL2 REQUIRED)
+
+add_executable(fmsui_sim
+  main_sim.cpp
+  ${REPO_ROOT}/demo/m0_probe.cpp
+  ${REPO_ROOT}/demo/m1_demo.cpp
+  ${REPO_ROOT}/demo/catalog.cpp
+  ${REPO_ROOT}/demo/fms_pages.cpp
+  ${REPO_ROOT}/demo/reorder_demo.cpp
+)
+
+target_include_directories(fmsui_sim PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${REPO_ROOT}/demo
+  ${SDL2_INCLUDE_DIRS}
+)
+
+target_link_libraries(fmsui_sim PRIVATE fmsui fmsui_fonts lvgl ${SDL2_LIBRARIES})
+
+# The simulator is where memory bugs in the Widget arena should surface, long
+# before they turn into a hard fault on the device.
+option(FMSUI_SANITIZE "Build the simulator with ASan/UBSan" OFF)
+if(FMSUI_SANITIZE)
+  target_compile_options(fmsui_sim PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+  target_link_options(fmsui_sim PRIVATE -fsanitize=address,undefined)
+endif()
+
+target_compile_options(fmsui_sim PRIVATE -Wall -Wextra)
+
+# Layout maths and reconciliation, tested headlessly.
+enable_testing()
+add_executable(fmsui_test ${REPO_ROOT}/tests/fmsui_test.cpp)
+target_link_libraries(fmsui_test PRIVATE fmsui lvgl)
+target_compile_options(fmsui_test PRIVATE -Wall -Wextra)
+if(FMSUI_SANITIZE)
+  target_compile_options(fmsui_test PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+  target_link_options(fmsui_test PRIVATE -fsanitize=address,undefined)
+endif()
+add_test(NAME fmsui_test COMMAND fmsui_test)

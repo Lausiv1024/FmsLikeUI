@@ -1,0 +1,821 @@
+/* Unit tests for the layout maths and the reconciler.
+ *
+ * These run on the host with no display and no LVGL objects, which is the point:
+ * flex distribution and element identity are where the subtle bugs live, and
+ * they should be caught by `ninja test` in a second, not by squinting at a
+ * screenshot on a 5-inch panel.
+ */
+
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "lvgl.h"
+
+#include "fmsui/fmsui.h"
+
+using namespace fmsui;
+
+namespace {
+
+int g_failures = 0;
+int g_checks = 0;
+
+void check(bool ok, const char *expr, const char *file, int line) {
+    g_checks++;
+    if (ok) return;
+    g_failures++;
+    std::printf("  FAIL %s:%d: %s\n", file, line, expr);
+}
+
+void checkNear(float got, float want, const char *what, const char *file, int line) {
+    g_checks++;
+    if (std::abs(got - want) < 0.01F) return;
+    g_failures++;
+    std::printf("  FAIL %s:%d: %s = %.2f, want %.2f\n", file, line, what, got, want);
+}
+
+#define CHECK(expr) check((expr), #expr, __FILE__, __LINE__)
+#define CHECK_EQ(got, want) checkNear((got), (want), #got, __FILE__, __LINE__)
+
+/* A render object that wants a fixed size but obeys its constraints -- stands in
+ * for whatever real leaf would be there. */
+class FixedBox : public RenderObject {
+public:
+    Size desired{0, 0};
+    void performLayout() override { size = constraints.constrain(desired); }
+};
+
+FixedBox *box(float w, float h) {
+    auto *b = new FixedBox();
+    b->desired = Size{w, h};
+    return b;
+}
+
+/* Owns the render objects a test builds, so the test itself stays readable. */
+class Scope {
+public:
+    ~Scope() {
+        for (RenderObject *r : owned_) delete r;
+    }
+    template <class T>
+    T *keep(T *r) {
+        owned_.push_back(r);
+        return r;
+    }
+
+private:
+    std::vector<RenderObject *> owned_;
+};
+
+/* ---- Layout ------------------------------------------------------------ */
+
+void test_flex_distributes_free_space() {
+    std::printf("flex: 2:1:1 of the free space\n");
+    Scope s;
+
+    auto *a = s.keep(box(0, 50));
+    auto *b = s.keep(box(0, 50));
+    auto *c = s.keep(box(0, 50));
+    a->flex = 2;
+    a->fit = FlexFit::Tight;
+    b->flex = 1;
+    b->fit = FlexFit::Tight;
+    c->flex = 1;
+    c->fit = FlexFit::Tight;
+
+    auto *row = s.keep(new RenderFlex());
+    row->direction = Axis::Horizontal;
+    row->setChildren({a, b, c});
+    row->layout(BoxConstraints::tight(Size{400, 100}));
+
+    CHECK_EQ(a->size.width, 200);
+    CHECK_EQ(b->size.width, 100);
+    CHECK_EQ(c->size.width, 100);
+    CHECK_EQ(a->offset.dx, 0);
+    CHECK_EQ(b->offset.dx, 200);
+    CHECK_EQ(c->offset.dx, 300);
+}
+
+void test_flex_leaves_room_for_inflexible_children() {
+    std::printf("flex: fixed children are subtracted before the split\n");
+    Scope s;
+
+    auto *fixed = s.keep(box(100, 50));
+    auto *grow = s.keep(box(0, 50));
+    grow->flex = 1;
+    grow->fit = FlexFit::Tight;
+
+    auto *row = s.keep(new RenderFlex());
+    row->direction = Axis::Horizontal;
+    row->setChildren({fixed, grow});
+    row->layout(BoxConstraints::tight(Size{400, 100}));
+
+    CHECK_EQ(fixed->size.width, 100);
+    CHECK_EQ(grow->size.width, 300);
+    CHECK_EQ(grow->offset.dx, 100);
+}
+
+void test_flex_spacing_is_taken_from_the_free_space() {
+    std::printf("flex: spacing eats into what the flex children share\n");
+    Scope s;
+
+    auto *a = s.keep(box(0, 50));
+    auto *b = s.keep(box(0, 50));
+    a->flex = 1;
+    a->fit = FlexFit::Tight;
+    b->flex = 1;
+    b->fit = FlexFit::Tight;
+
+    auto *row = s.keep(new RenderFlex());
+    row->direction = Axis::Horizontal;
+    row->spacing = 20;
+    row->setChildren({a, b});
+    row->layout(BoxConstraints::tight(Size{420, 100}));
+
+    CHECK_EQ(a->size.width, 200);
+    CHECK_EQ(b->size.width, 200);
+    CHECK_EQ(b->offset.dx, 220);
+}
+
+void test_main_axis_alignment() {
+    std::printf("flex: main axis alignment\n");
+
+    struct Case {
+        MainAxis align;
+        float want_first;
+        float want_second;
+    };
+    const Case cases[] = {
+        {MainAxis::Start, 0, 100},
+        {MainAxis::End, 200, 300},
+        {MainAxis::Center, 100, 200},
+        {MainAxis::SpaceBetween, 0, 300},
+        {MainAxis::SpaceAround, 50, 250},
+        {MainAxis::SpaceEvenly, 66.67F, 233.33F},
+    };
+
+    for (const Case &tc : cases) {
+        Scope s;
+        auto *a = s.keep(box(100, 50));
+        auto *b = s.keep(box(100, 50));
+        auto *row = s.keep(new RenderFlex());
+        row->direction = Axis::Horizontal;
+        row->main_axis = tc.align;
+        row->setChildren({a, b});
+        row->layout(BoxConstraints::tight(Size{400, 100}));
+
+        CHECK_EQ(a->offset.dx, tc.want_first);
+        CHECK_EQ(b->offset.dx, tc.want_second);
+    }
+}
+
+void test_cross_axis_stretch_makes_the_cross_constraint_tight() {
+    std::printf("flex: CrossAxis::Stretch\n");
+    Scope s;
+
+    auto *a = s.keep(box(100, 10));  // wants to be 10 tall
+    auto *col = s.keep(new RenderFlex());
+    col->direction = Axis::Vertical;
+    col->cross_axis = CrossAxis::Stretch;
+    col->setChildren({a});
+    col->layout(BoxConstraints::tight(Size{400, 200}));
+
+    CHECK_EQ(a->size.width, 400);  // stretched across
+    CHECK_EQ(a->size.height, 10);  // natural along the main axis
+}
+
+void test_stretch_shrink_wraps_under_a_loose_cross_constraint() {
+    std::printf("flex: Stretch shrink-wraps to the widest child when the cross axis is loose\n");
+    Scope s;
+
+    auto *narrow = s.keep(box(40, 20));
+    auto *wide = s.keep(box(90, 20));
+
+    auto *col = s.keep(new RenderFlex());
+    col->direction = Axis::Vertical;
+    col->cross_axis = CrossAxis::Stretch;
+    col->main_size = MainAxisSize::Min;
+    col->setChildren({narrow, wide});
+
+    /* Loose across: an upper bound of 500, no lower bound. This is what a popup
+     * anchored on the screen gets. Filling 500 would be Flutter's answer; ours is
+     * to take the width of the widest child. */
+    col->layout(BoxConstraints{0, 500, 0, 500});
+
+    CHECK_EQ(col->size.width, 90);
+    CHECK_EQ(narrow->size.width, 90);  // stretched to match
+    CHECK_EQ(wide->size.width, 90);
+}
+
+void test_stretch_fills_a_tight_cross_constraint() {
+    std::printf("flex: Stretch still fills when the cross axis is tight\n");
+    Scope s;
+
+    auto *a = s.keep(box(40, 20));
+    auto *col = s.keep(new RenderFlex());
+    col->direction = Axis::Vertical;
+    col->cross_axis = CrossAxis::Stretch;
+    col->setChildren({a});
+    col->layout(BoxConstraints::tight(Size{300, 200}));
+
+    CHECK_EQ(col->size.width, 300);
+    CHECK_EQ(a->size.width, 300);
+}
+
+void test_main_axis_size_min_shrink_wraps() {
+    std::printf("flex: MainAxisSize::Min\n");
+    Scope s;
+
+    auto *a = s.keep(box(100, 50));
+    auto *b = s.keep(box(60, 50));
+    auto *row = s.keep(new RenderFlex());
+    row->direction = Axis::Horizontal;
+    row->main_size = MainAxisSize::Min;
+    row->setChildren({a, b});
+    row->layout(BoxConstraints{0, 400, 0, 100});
+
+    CHECK_EQ(row->size.width, 160);
+}
+
+void test_padding_deflates_then_reinflates() {
+    std::printf("padding\n");
+    Scope s;
+
+    auto *child = s.keep(box(1000, 1000));  // will be clamped by the constraint
+    auto *pad = s.keep(new RenderPadding());
+    pad->padding = EdgeInsets::only(10, 20, 30, 40);
+    pad->setChildren({child});
+    pad->layout(BoxConstraints::tight(Size{200, 200}));
+
+    CHECK_EQ(child->size.width, 160);   // 200 - 10 - 30
+    CHECK_EQ(child->size.height, 140);  // 200 - 20 - 40
+    CHECK_EQ(child->offset.dx, 10);
+    CHECK_EQ(child->offset.dy, 20);
+    CHECK_EQ(pad->size.width, 200);
+}
+
+void test_align_centres_and_fills() {
+    std::printf("align\n");
+    Scope s;
+
+    auto *child = s.keep(box(100, 50));
+    auto *al = s.keep(new RenderAlign());
+    al->alignment = Alignment::center();
+    al->setChildren({child});
+    al->layout(BoxConstraints::tight(Size{300, 200}));
+
+    CHECK_EQ(al->size.width, 300);      // fills the bounded space
+    CHECK_EQ(child->offset.dx, 100);    // (300 - 100) / 2
+    CHECK_EQ(child->offset.dy, 75);     // (200 - 50) / 2
+}
+
+void test_align_shrink_wraps_when_unbounded() {
+    std::printf("align: unbounded axis shrink-wraps\n");
+    Scope s;
+
+    auto *child = s.keep(box(100, 50));
+    auto *al = s.keep(new RenderAlign());
+    al->setChildren({child});
+    al->layout(BoxConstraints{0, kInf, 0, kInf});
+
+    CHECK_EQ(al->size.width, 100);
+    CHECK_EQ(al->size.height, 50);
+}
+
+void test_constrained_box_is_clamped_by_its_parent() {
+    std::printf("constrained box: additional.enforce(constraints)\n");
+    Scope s;
+
+    auto *cb = s.keep(new RenderConstrainedBox());
+    cb->additional = BoxConstraints::tight(Size{500, 500});  // asks for more than it may have
+    cb->layout(BoxConstraints{0, 200, 0, 200});
+
+    CHECK_EQ(cb->size.width, 200);
+    CHECK_EQ(cb->size.height, 200);
+}
+
+void test_stack_positions_from_edges() {
+    std::printf("stack + positioned\n");
+    Scope s;
+
+    auto *back = s.keep(box(50, 50));
+    auto *front = s.keep(box(30, 20));
+
+    auto *pos = s.keep(new RenderPositioned());
+    pos->right = 10;
+    pos->bottom = 5;
+    pos->setChildren({front});
+
+    auto *stack = s.keep(new RenderStack());
+    stack->setChildren({back, pos});
+    stack->layout(BoxConstraints::tight(Size{200, 100}));
+
+    /* The unpositioned child sizes the stack only when the stack is loose; here
+     * it is tight, so the stack is 200x100 and the positioned child is measured
+     * from the right and bottom edges. */
+    CHECK_EQ(front->offset.dx, 160);  // 200 - 10 - 30
+    CHECK_EQ(front->offset.dy, 75);   // 100 - 5 - 20
+}
+
+/* ---- Reconciliation ---------------------------------------------------- */
+
+/* Counts how often it is created, so a test can tell "the State survived the
+ * rebuild" apart from "a fresh State happened to hold the same number". */
+int g_state_constructions = 0;
+int g_state_disposals = 0;
+
+class CounterState;
+
+/* Every live CounterState, by the start value it was built from -- so a test can
+ * hold on to a State across a rebuild and check it is the same object. */
+std::vector<std::pair<int, CounterState *>> g_live_states;
+
+class Counter : public StatefulWidget {
+public:
+    explicit Counter(int start, Key k = {}) : start_(start) { key = k; }
+    FMSUI_WIDGET(Counter)
+    StateBase *createState() const override;
+    int start() const { return start_; }
+
+private:
+    int start_;
+};
+
+class CounterState : public State<Counter> {
+public:
+    int value = -1;
+
+    void initState() override {
+        g_state_constructions++;
+        value = widget().start();
+        g_live_states.push_back({value, this});
+    }
+    void dispose() override {
+        g_state_disposals++;
+        for (size_t i = 0; i < g_live_states.size(); i++) {
+            if (g_live_states[i].second != this) continue;
+            g_live_states.erase(g_live_states.begin() + static_cast<long>(i));
+            break;
+        }
+    }
+    Widget *build(BuildContext &ctx) override {
+        (void)ctx;
+        return new Text{{.text = fmt("%d", value)}};
+    }
+};
+
+StateBase *Counter::createState() const { return new CounterState(); }
+
+/* The live State that was built from this start value, or null. */
+CounterState *stateFor(int start) {
+    for (const auto &e : g_live_states) {
+        if (e.first == start) return e.second;
+    }
+    return nullptr;
+}
+
+void resetCounters() {
+    g_state_constructions = 0;
+    g_state_disposals = 0;
+    g_live_states.clear();
+}
+
+/* A hand-rolled root so the reconciler can be driven without a display. */
+class TestRoot : public SingleChildRenderObjectWidget {
+public:
+    explicit TestRoot(Widget *c) { child = c; }
+    FMSUI_WIDGET(TestRoot)
+    RenderObject *createRenderObject() const override { return new RenderView(); }
+    void updateRenderObject(RenderObject *) const override {}
+};
+
+void test_state_survives_a_rebuild() {
+    std::printf("reconcile: State survives when type and key match\n");
+
+    BuildArenas arenas;
+    BuildOwner owner;
+    g_state_constructions = 0;
+
+    arenas.beginBuild();
+    Widget *t1 = new TestRoot(new Counter(7));
+    Element *root = t1->createElement();
+    root->mount(nullptr, &owner);
+
+    CHECK(g_state_constructions == 1);
+
+    /* Rebuild with an identical tree: the Element, and therefore the State,
+     * must be reused rather than recreated. */
+    arenas.beginBuild();
+    Widget *t2 = new TestRoot(new Counter(7));
+    root->update(t2);
+
+    CHECK(g_state_constructions == 1);
+
+    root->unmount();
+    delete root;
+}
+
+void test_a_different_key_throws_the_state_away() {
+    std::printf("reconcile: a changed key replaces the Element\n");
+
+    BuildArenas arenas;
+    BuildOwner owner;
+    g_state_constructions = 0;
+
+    arenas.beginBuild();
+    Element *root = (new TestRoot(new Counter(7, Key{1})))->createElement();
+    root->mount(nullptr, &owner);
+    CHECK(g_state_constructions == 1);
+
+    arenas.beginBuild();
+    root->update(new TestRoot(new Counter(7, Key{2})));
+    CHECK(g_state_constructions == 2);  // new key -> new State
+
+    root->unmount();
+    delete root;
+}
+
+void test_children_can_be_added_and_removed() {
+    std::printf("reconcile: a shrinking child list unmounts the extras\n");
+
+    BuildArenas arenas;
+    BuildOwner owner;
+    g_state_constructions = 0;
+
+    arenas.beginBuild();
+    Element *root = (new TestRoot(new Column{{.children = {new Counter(1), new Counter(2),
+                                                           new Counter(3)}}}))
+                        ->createElement();
+    root->mount(nullptr, &owner);
+    CHECK(g_state_constructions == 3);
+
+    /* Drop one. The two survivors keep their State; nothing new is built. */
+    arenas.beginBuild();
+    root->update(new TestRoot(new Column{{.children = {new Counter(1), new Counter(2)}}}));
+    CHECK(g_state_constructions == 3);
+
+    /* Grow again: exactly one new State. */
+    arenas.beginBuild();
+    root->update(new TestRoot(
+        new Column{{.children = {new Counter(1), new Counter(2), new Counter(9)}}}));
+    CHECK(g_state_constructions == 4);
+
+    root->unmount();
+    delete root;
+}
+
+/* What each child of the root's Column renders, in render order.  A State that
+ * moved shows the mark the test wrote into it; one that was rebuilt shows its
+ * start value.  That is the difference the reorder tests turn on. */
+bool textsAre(Element *root, std::initializer_list<const char *> want) {
+    RenderObject *flex = root->renderObject()->firstChild();
+    const std::vector<RenderObject *> &kids = flex->children();
+    if (kids.size() != want.size()) return false;
+    size_t i = 0;
+    for (const char *w : want) {
+        if (static_cast<RenderText *>(kids[i++])->text != w) return false;
+    }
+    return true;
+}
+
+void test_keyed_children_survive_a_reorder() {
+    std::printf("reconcile: keyed children move instead of being rebuilt\n");
+
+    BuildArenas arenas;
+    BuildOwner owner;
+    resetCounters();
+
+    arenas.beginBuild();
+    Element *root =
+        (new TestRoot(new Column{{.children = {new Counter(1, Key{1}), new Counter(2, Key{2}),
+                                               new Counter(3, Key{3})}}}))
+            ->createElement();
+    root->mount(nullptr, &owner);
+    CHECK(g_state_constructions == 3);
+
+    /* Mark each State. A rebuilt one would go back to showing its start value. */
+    CounterState *s1 = stateFor(1);
+    CounterState *s2 = stateFor(2);
+    CounterState *s3 = stateFor(3);
+    CHECK(s1 != nullptr && s2 != nullptr && s3 != nullptr);
+    s1->value = 11;
+    s2->value = 22;
+    s3->value = 33;
+
+    arenas.beginBuild();
+    root->update(new TestRoot(new Column{{.children = {new Counter(3, Key{3}),
+                                                       new Counter(1, Key{1}),
+                                                       new Counter(2, Key{2})}}}));
+
+    CHECK(g_state_constructions == 3);  // nothing new was built
+    CHECK(g_state_disposals == 0);      // nothing was thrown away
+    CHECK(stateFor(1) == s1);
+    CHECK(stateFor(2) == s2);
+    CHECK(stateFor(3) == s3);
+
+    /* The marks moved with the States, and the render objects are in the new
+     * order -- so the children really were adopted at new positions. */
+    CHECK(textsAre(root, {"33", "11", "22"}));
+
+    root->unmount();
+    delete root;
+}
+
+void test_keyed_prepend_rebuilds_only_the_new_child() {
+    std::printf("reconcile: inserting at the front does not rebuild the rest\n");
+
+    BuildArenas arenas;
+    BuildOwner owner;
+    resetCounters();
+
+    arenas.beginBuild();
+    Element *root =
+        (new TestRoot(new Column{{.children = {new Counter(1, Key{1}), new Counter(2, Key{2}),
+                                               new Counter(3, Key{3})}}}))
+            ->createElement();
+    root->mount(nullptr, &owner);
+    stateFor(1)->value = 11;
+    stateFor(2)->value = 22;
+    stateFor(3)->value = 33;
+
+    arenas.beginBuild();
+    root->update(new TestRoot(new Column{{.children = {new Counter(0, Key{0}),
+                                                       new Counter(1, Key{1}),
+                                                       new Counter(2, Key{2}),
+                                                       new Counter(3, Key{3})}}}));
+
+    CHECK(g_state_constructions == 4);  // exactly one new State
+    CHECK(g_state_disposals == 0);
+    CHECK(textsAre(root, {"0", "11", "22", "33"}));
+
+    root->unmount();
+    delete root;
+}
+
+void test_removing_a_keyed_child_disposes_it_once() {
+    std::printf("reconcile: a keyed child removed from the middle is disposed once\n");
+
+    BuildArenas arenas;
+    BuildOwner owner;
+    resetCounters();
+
+    arenas.beginBuild();
+    Element *root =
+        (new TestRoot(new Column{{.children = {new Counter(1, Key{1}), new Counter(2, Key{2}),
+                                               new Counter(3, Key{3})}}}))
+            ->createElement();
+    root->mount(nullptr, &owner);
+    stateFor(1)->value = 11;
+    stateFor(3)->value = 33;
+
+    arenas.beginBuild();
+    root->update(new TestRoot(
+        new Column{{.children = {new Counter(1, Key{1}), new Counter(3, Key{3})}}}));
+
+    CHECK(g_state_constructions == 3);  // no rebuilds
+    CHECK(g_state_disposals == 1);      // just the one that left
+    CHECK(stateFor(2) == nullptr);
+    CHECK(textsAre(root, {"11", "33"}));
+
+    root->unmount();
+    CHECK(g_state_disposals == 3);
+    delete root;
+}
+
+void test_unkeyed_children_still_reconcile_positionally() {
+    std::printf("reconcile: without keys, State follows position\n");
+
+    BuildArenas arenas;
+    BuildOwner owner;
+    resetCounters();
+
+    arenas.beginBuild();
+    Element *root = (new TestRoot(new Column{{.children = {new Counter(1), new Counter(2),
+                                                           new Counter(3)}}}))
+                        ->createElement();
+    root->mount(nullptr, &owner);
+    stateFor(1)->value = 11;
+    stateFor(2)->value = 22;
+    stateFor(3)->value = 33;
+
+    /* Drop the middle one. With no keys there is nothing to identify the
+     * survivors by, so slot 1 keeps the State that was already in slot 1 and
+     * the list simply gets shorter -- the old behaviour, unchanged. */
+    arenas.beginBuild();
+    root->update(new TestRoot(new Column{{.children = {new Counter(1), new Counter(3)}}}));
+
+    CHECK(g_state_constructions == 3);
+    CHECK(g_state_disposals == 1);
+    CHECK(textsAre(root, {"11", "22"}));
+
+    root->unmount();
+    delete root;
+}
+
+void test_mixed_keyed_and_unkeyed_children() {
+    std::printf("reconcile: keyed children move past an unkeyed one\n");
+
+    BuildArenas arenas;
+    BuildOwner owner;
+    resetCounters();
+
+    arenas.beginBuild();
+    Element *root =
+        (new TestRoot(new Column{{.children = {new Counter(1, Key{1}), new Counter(2),
+                                               new Counter(3, Key{3})}}}))
+            ->createElement();
+    root->mount(nullptr, &owner);
+    stateFor(1)->value = 11;
+    stateFor(2)->value = 22;
+    stateFor(3)->value = 33;
+
+    arenas.beginBuild();
+    root->update(new TestRoot(new Column{{.children = {new Counter(3, Key{3}), new Counter(2),
+                                                       new Counter(1, Key{1})}}}));
+
+    /* The two keyed ones swapped and kept their State; the unkeyed one in the
+     * middle could not be identified across the move, so it was rebuilt. */
+    CHECK(g_state_constructions == 4);
+    CHECK(g_state_disposals == 1);
+    CHECK(textsAre(root, {"33", "2", "11"}));
+
+    root->unmount();
+    delete root;
+}
+
+/* ---- FMS widgets ------------------------------------------------------- */
+
+/* Every render object in a subtree, in tree order.  Comparing two of these
+ * across a rebuild answers the only question that matters for cost: did the
+ * reconciler keep the objects, or throw them away and make new ones?  A new
+ * RenderLv means a new lv_obj, and an lv_obj costs about a millisecond on the
+ * device. */
+void collectRenderObjects(RenderObject *r, std::vector<RenderObject *> &out) {
+    out.push_back(r);
+    for (RenderObject *c : r->children()) collectRenderObjects(c, out);
+}
+
+/* A theme with no fonts: RenderText falls back to LVGL's default, and nothing
+ * here is laid out anyway. */
+FmsThemeData testTheme() {
+    FmsThemeData data;
+    data.color = defaultPalette();
+    data.font = FmsTypography{};
+    data.metric = defaultMetrics();
+    return data;
+}
+
+void test_disabling_a_button_keeps_its_subtree() {
+    std::printf("fms: a button greying out does not rebuild it\n");
+
+    BuildArenas arenas;
+    BuildOwner owner;
+
+    const auto build = [](bool enabled) {
+        return new TestRoot(new FmsTheme{{
+            .data = testTheme(),
+            .child = new FmsButton{{.text = "MOVE UP",
+                                    .text2 = "",
+                                    .role = FmsRole::Entry,
+                                    .enabled = enabled,
+                                    .on_tap = [] {}}},
+        }});
+    };
+
+    arenas.beginBuild();
+    Element *root = build(true)->createElement();
+    root->mount(nullptr, &owner);
+
+    std::vector<RenderObject *> before;
+    collectRenderObjects(root->renderObject(), before);
+    CHECK(before.size() > 2);  // the detector, the box and the label at least
+
+    /* The detector is the button's outermost render object.  Held as a plain
+     * RenderObject* and looked up again after each rebuild: should this ever
+     * regress, the old one is deleted and the slot holds a decorated box
+     * instead, and the test has to say so rather than downcast it and read
+     * whatever is there. */
+    RenderObject *const first = root->renderObject()->firstChild();
+    CHECK(static_cast<bool>(static_cast<RenderGestureDetector *>(first)->on_tap));
+
+    arenas.beginBuild();
+    root->update(build(false));
+
+    std::vector<RenderObject *> after;
+    collectRenderObjects(root->renderObject(), after);
+
+    /* The same objects, in the same places: only the colour and the callback
+     * moved. */
+    CHECK(before == after);
+    CHECK(root->renderObject()->firstChild() == first);
+    if (root->renderObject()->firstChild() == first) {
+        CHECK(!static_cast<RenderGestureDetector *>(first)->on_tap);  // reacts to nothing
+    }
+
+    /* And back, without a rebuild either way. */
+    arenas.beginBuild();
+    root->update(build(true));
+
+    std::vector<RenderObject *> again;
+    collectRenderObjects(root->renderObject(), again);
+    CHECK(before == again);
+    if (root->renderObject()->firstChild() == first) {
+        CHECK(static_cast<bool>(static_cast<RenderGestureDetector *>(first)->on_tap));
+    }
+
+    root->unmount();
+    delete root;
+}
+
+void test_a_field_box_without_a_callback_keeps_its_shape() {
+    std::printf("fms: a field box gaining a callback does not rebuild it\n");
+
+    BuildArenas arenas;
+    BuildOwner owner;
+
+    const auto build = [](bool tappable) {
+        return new TestRoot(new FmsTheme{{
+            .data = testTheme(),
+            .child = new FmsFieldBox{{.text = "153",
+                                      .unit = "KT",
+                                      .role = FmsRole::Entry,
+                                      .empty = false,
+                                      .on_tap = tappable ? VoidCallback([] {}) : VoidCallback{}}},
+        }});
+    };
+
+    arenas.beginBuild();
+    Element *root = build(false)->createElement();
+    root->mount(nullptr, &owner);
+
+    std::vector<RenderObject *> before;
+    collectRenderObjects(root->renderObject(), before);
+
+    arenas.beginBuild();
+    root->update(build(true));
+
+    std::vector<RenderObject *> after;
+    collectRenderObjects(root->renderObject(), after);
+    CHECK(before == after);
+
+    root->unmount();
+    delete root;
+}
+
+void test_arena_resets_between_builds() {
+    std::printf("arena: reset destroys the widgets and rewinds\n");
+
+    Arena a;
+    Arena::setCurrent(&a);
+
+    (void)new Text{{.text = "hello"}};
+    (void)new Text{{.text = "world"}};
+    CHECK(a.objectCount() == 2);
+    CHECK(a.bytesUsed() > 0);
+
+    a.reset();
+    CHECK(a.objectCount() == 0);
+    CHECK(a.bytesUsed() == 0);
+
+    Arena::setCurrent(nullptr);
+}
+
+}  // namespace
+
+int main() {
+    lv_init();  // RenderText measures with LVGL's font tables
+
+    test_flex_distributes_free_space();
+    test_flex_leaves_room_for_inflexible_children();
+    test_flex_spacing_is_taken_from_the_free_space();
+    test_main_axis_alignment();
+    test_cross_axis_stretch_makes_the_cross_constraint_tight();
+    test_stretch_shrink_wraps_under_a_loose_cross_constraint();
+    test_stretch_fills_a_tight_cross_constraint();
+    test_main_axis_size_min_shrink_wraps();
+    test_padding_deflates_then_reinflates();
+    test_align_centres_and_fills();
+    test_align_shrink_wraps_when_unbounded();
+    test_constrained_box_is_clamped_by_its_parent();
+    test_stack_positions_from_edges();
+
+    test_state_survives_a_rebuild();
+    test_a_different_key_throws_the_state_away();
+    test_children_can_be_added_and_removed();
+    test_keyed_children_survive_a_reorder();
+    test_keyed_prepend_rebuilds_only_the_new_child();
+    test_removing_a_keyed_child_disposes_it_once();
+    test_unkeyed_children_still_reconcile_positionally();
+    test_mixed_keyed_and_unkeyed_children();
+
+    test_disabling_a_button_keeps_its_subtree();
+    test_a_field_box_without_a_callback_keeps_its_shape();
+
+    test_arena_resets_between_builds();
+
+    std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
+    return g_failures == 0 ? 0 : 1;
+}

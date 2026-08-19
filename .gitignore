@@ -1,0 +1,23 @@
+# Build output. Anchored to the repo root so that a source directory whose name
+# merely starts with "build" is not swept up, and so that the next build dir
+# (build-asan, build-pages, ...) is ignored without editing this file again.
+/build*/
+
+sdkconfig
+sdkconfig.old
+managed_components/
+dependencies.lock
+compile_commands.json
+.vscode/ipch/
+
+# lv_font_conv, installed from tools/package.json. The lockfile is committed so
+# the font generation is reproducible; the tree it unpacks into is not.
+tools/node_modules/
+
+# Per-machine Claude Code settings.
+.claude/settings.local.json
+
+# Screenshots are build output too -- the simulator writes them with --shot.
+# The ones under docs/ are deliberate, so keep those.
+*.png
+!docs/**/*.png
