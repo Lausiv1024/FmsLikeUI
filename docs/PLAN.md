@@ -141,6 +141,9 @@ FmsLikeUI/
 │   │   │   └── fms/            # FMS 風ウィジェット群
 │   │   └── src/
 │   ├── fmsui_port_esp/         # 実機ポート(BSP / esp_lvgl_port / タッチ / tick)
+│   │                           #   → 作りませんでした。BSP の初期化も回転もタッチも
+│   │                           #     esp_lvgl_port が持っていて、main/main.cpp から
+│   │                           #     数行呼ぶだけで足りたため。抽象化する対象が無い。
 │   └── fmsui_fonts/            # 生成済み lv_font C 配列
 ├── sim/                        # PC シミュレータ(素の CMake + SDL2 + LVGL)
 │   └── main_sim.cpp
