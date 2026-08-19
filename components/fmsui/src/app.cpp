@@ -71,8 +71,13 @@ void FmsApp::setBackground(Color c) {
 void FmsApp::timerCb(lv_timer_t *t) { static_cast<FmsApp *>(lv_timer_get_user_data(t))->frame(); }
 
 void FmsApp::frame() {
-    if (!owner_.needsBuild()) return;
-    owner_.clearNeedsBuild();
+    /* Whichever thread runs the frame loop owns the tree. Recorded here rather
+     * than in init(), because on the device init() runs from app_main while this
+     * runs from the task esp_lvgl_port created -- they are not the same thread,
+     * and it is this one that matters. */
+    if (!owner_.bound()) owner_.bindToCurrentThread();
+
+    if (!owner_.takeNeedsBuild()) return;
 
     const auto now = [this] { return clock_ != nullptr ? clock_() : lv_tick_get() * 1000U; };
     const uint32_t t0 = now();

@@ -121,7 +121,23 @@ void Element::unmount() {
 }
 
 void Element::markNeedsBuild() {
-    if (owner_ != nullptr) owner_->scheduleBuild();
+    if (owner_ == nullptr) return;
+
+    /* setState() has already run the caller's mutation by the time we get here,
+     * so if this is the wrong thread the damage is done -- which is exactly why
+     * it is worth catching. A State mutated from a sensor or network task races
+     * the build that is reading it, and `fmt()` or Str inside that mutation
+     * writes into the widget arena while the UI thread is using it. Both are
+     * silent, and both look like they work in a single-task demo.
+     *
+     * From another task: publish the value somewhere the build can read it
+     * (an atomic, a lock-free queue, a buffer you own) and then call
+     * FmsApp::requestFrame(). See docs/DESIGN.md. */
+    assert(owner_->onBuildThread() &&
+           "setState() from a thread other than the frame loop's -- publish the "
+           "value and call FmsApp::requestFrame() instead");
+
+    owner_->scheduleBuild();
 }
 
 Element *Element::updateChild(Element *child, Widget *next) {

@@ -19,6 +19,8 @@
  * RenderObjects only touch LVGL for values that actually changed.
  */
 
+#include <atomic>
+#include <thread>
 #include <vector>
 
 #include "fmsui/render.h"
@@ -26,14 +28,48 @@
 
 namespace fmsui {
 
+/* Owns the "something changed" flag, and knows which thread is allowed to touch
+ * the tree.
+ *
+ * The flag is the one thing in the framework that any task may poke. Everything
+ * else -- the element tree, the render objects, the build arena, LVGL itself --
+ * belongs to the thread that runs the frame loop, and there is no lock anywhere
+ * that would make it otherwise.
+ */
 class BuildOwner {
 public:
-    void scheduleBuild() { needs_build_ = true; }
-    bool needsBuild() const { return needs_build_; }
-    void clearNeedsBuild() { needs_build_ = false; }
+    /* Ask for a rebuild. Callable from any task: one release store, no
+     * allocation, no locking, nothing that can block.
+     *
+     * Call it *after* publishing whatever changed. The release here pairs with
+     * the acquire in takeNeedsBuild(), which is what makes those writes visible
+     * to the build that follows. */
+    void scheduleBuild() { needs_build_.store(true, std::memory_order_release); }
+
+    /* Claim the request, if there is one. A store that lands after this returns
+     * is not lost: the flag stays set and the next frame picks it up. */
+    bool takeNeedsBuild() { return needs_build_.exchange(false, std::memory_order_acquire); }
+
+    bool needsBuild() const { return needs_build_.load(std::memory_order_acquire); }
+
+    /* For callers that cannot afford a call into flash -- see FmsApp::requester(). */
+    std::atomic<bool> *dirtyFlag() { return &needs_build_; }
+
+    /* Remember the thread the frame loop runs on, so that mutating the tree from
+     * anywhere else can be caught instead of silently corrupting the arena.
+     * FmsApp does this on its first frame; the unit tests drive the tree
+     * directly and never bind, which leaves the check inert. */
+    void bindToCurrentThread() {
+        ui_thread_ = std::this_thread::get_id();
+        bound_ = true;
+    }
+    bool bound() const { return bound_; }
+    bool onBuildThread() const { return !bound_ || ui_thread_ == std::this_thread::get_id(); }
 
 private:
-    bool needs_build_ = true;
+    std::atomic<bool> needs_build_{true};
+    std::thread::id ui_thread_{};
+    bool bound_ = false;
 };
 
 class Element {

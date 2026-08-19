@@ -13,6 +13,7 @@
  * full repaint.
  */
 
+#include <atomic>
 #include <cstddef>
 #include <functional>
 
@@ -46,6 +47,34 @@ struct FrameStats {
     uint32_t total_us = 0;
 };
 
+/* A frame request stripped down to a pointer to one atomic flag.
+ *
+ * FmsApp::instance() is a function, and on the device that function lives in
+ * flash -- so an ESP-IDF interrupt handler registered with ESP_INTR_FLAG_IRAM
+ * cannot call FmsApp::instance().requestFrame(): the flash cache may be turned
+ * off while it runs. Take one of these during setup, keep it somewhere your
+ * handler can reach, and request() is a single inlined release store with
+ * nothing in flash, no allocation and no locking.
+ *
+ * That said, prefer the ordinary ESP-IDF shape -- have the ISR notify a task
+ * and call requestFrame() from there. An ISR that only sets a flag the UI reads
+ * next frame has bought itself nothing, because the data it received still has
+ * to get somewhere the build can see it. */
+class FrameRequester {
+public:
+    FrameRequester() = default;
+
+    void request() const {
+        if (flag_ != nullptr) flag_->store(true, std::memory_order_release);
+    }
+    bool valid() const { return flag_ != nullptr; }
+
+private:
+    friend class FmsApp;
+    explicit FrameRequester(std::atomic<bool> *flag) : flag_(flag) {}
+    std::atomic<bool> *flag_ = nullptr;
+};
+
 class FmsApp {
 public:
     static FmsApp &instance();
@@ -54,8 +83,29 @@ public:
      * It runs inside a build pass, so `new` inside it hits the arena. */
     void init(lv_display_t *display, WidgetBuilder builder);
 
-    /* Force a rebuild on the next frame. setState() does this for you. */
+    /* Force a rebuild on the next frame. setState() does this for you.
+     *
+     * This is the only entry point that may be called from another task, and it
+     * is the whole cross-task story: publish what changed somewhere the build
+     * can read it, then call this. It is one release store -- no allocation, no
+     * locking, and it cannot block, so a sensor task at 100Hz can call it on
+     * every sample without ever waiting on the UI.
+     *
+     *     altitude_.store(v, std::memory_order_relaxed);   // yours to own
+     *     FmsApp::instance().requestFrame();               // then this
+     *
+     * Order matters: publish first, request second. Requesting a frame does not
+     * queue the value, it only says "read your inputs again", so the UI shows
+     * the latest reading rather than replaying every one of them -- which is
+     * what you want from a stream of sensor, CAN or network updates.
+     *
+     * What you must NOT do is reach into a State from another task. setState()
+     * runs your mutation immediately, on the calling task, racing the build. */
     void requestFrame() { owner_.scheduleBuild(); }
+
+    /* A requester that can be poked from an IRAM interrupt handler. Fetch it
+     * during setup; see FrameRequester. */
+    FrameRequester requester() { return FrameRequester(owner_.dirtyFlag()); }
 
     Size screenSize() const { return screen_; }
     const FrameStats &stats() const { return stats_; }

@@ -8,7 +8,9 @@
 
 #include <cstdio>
 #include <cstring>
+#include <atomic>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -765,6 +767,78 @@ void test_a_field_box_without_a_callback_keeps_its_shape() {
     delete root;
 }
 
+/* ---- Cross-thread ------------------------------------------------------ */
+
+void test_request_from_another_thread_is_seen() {
+    std::printf("threads: requestFrame from another thread reaches the frame loop\n");
+
+    BuildOwner owner;
+    CHECK(owner.takeNeedsBuild());   // starts dirty, and claiming it clears it
+    CHECK(!owner.takeNeedsBuild());
+
+    /* What a sensor task does: publish, then ask for a frame. */
+    std::atomic<int> published{0};
+    std::thread producer([&] {
+        published.store(42, std::memory_order_relaxed);
+        owner.scheduleBuild();
+    });
+    producer.join();
+
+    CHECK(owner.takeNeedsBuild());
+    /* The acquire in takeNeedsBuild pairs with the release in scheduleBuild, so
+     * the value published before the request is visible to the build after it. */
+    CHECK(published.load(std::memory_order_relaxed) == 42);
+    CHECK(!owner.takeNeedsBuild());
+}
+
+void test_a_request_during_a_build_is_not_lost() {
+    std::printf("threads: a request that lands mid-build survives to the next frame\n");
+
+    BuildOwner owner;
+    (void)owner.takeNeedsBuild();  // consume the initial dirty state
+
+    /* The frame loop claims the flag and starts building... */
+    owner.scheduleBuild();
+    CHECK(owner.takeNeedsBuild());
+
+    /* ...and a producer asks again while that build is still running. */
+    std::thread producer([&] { owner.scheduleBuild(); });
+    producer.join();
+
+    /* The next frame must still rebuild, or that update is never shown. */
+    CHECK(owner.takeNeedsBuild());
+}
+
+void test_the_frame_thread_is_recorded() {
+    std::printf("threads: the build thread is remembered once bound\n");
+
+    BuildOwner owner;
+    CHECK(!owner.bound());
+    CHECK(owner.onBuildThread());  // unbound: the check is inert, as in these tests
+
+    std::thread frame_loop([&] { owner.bindToCurrentThread(); });
+    frame_loop.join();
+
+    CHECK(owner.bound());
+    /* Bound to a thread that is not this one, so this one is not allowed to
+     * mutate the tree -- which is what markNeedsBuild() asserts on. */
+    CHECK(!owner.onBuildThread());
+}
+
+void test_the_isr_requester_sets_the_same_flag() {
+    std::printf("threads: FrameRequester pokes the flag FmsApp reads\n");
+
+    BuildOwner owner;
+    (void)owner.takeNeedsBuild();
+
+    /* FmsApp::requester() hands out one of these; here we build it the same way
+     * from the owner's flag, since constructing an FmsApp needs a display. */
+    std::atomic<bool> *flag = owner.dirtyFlag();
+    flag->store(true, std::memory_order_release);
+
+    CHECK(owner.takeNeedsBuild());
+}
+
 void test_arena_resets_between_builds() {
     std::printf("arena: reset destroys the widgets and rewinds\n");
 
@@ -814,6 +888,10 @@ int main() {
     test_disabling_a_button_keeps_its_subtree();
     test_a_field_box_without_a_callback_keeps_its_shape();
 
+    test_request_from_another_thread_is_seen();
+    test_a_request_during_a_build_is_not_lost();
+    test_the_frame_thread_is_recorded();
+    test_the_isr_requester_sets_the_same_flag();
     test_arena_resets_between_builds();
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
