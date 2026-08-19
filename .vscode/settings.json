@@ -1,17 +1,53 @@
 {
+  // ---- ESP-IDF ------------------------------------------------------------
+  //
+  // Pinned explicitly rather than left to the environment. The user-level
+  // IDF_PATH on this machine points at v5.4.2, and CMakeLists.txt resolves
+  // `include($ENV{IDF_PATH}/tools/cmake/project.cmake)` -- so anything that
+  // inherits the ambient environment loads the wrong ESP-IDF. This project
+  // needs 5.5 (espressif/usb calls the 5.5 HAL; see docs/PLAN.md).
   "idf.currentSetup": "C:\\esp\\v5.5.4\\esp-idf",
+  "idf.espIdfPathWin": "C:\\esp\\v5.5.4\\esp-idf",
+  "idf.toolsPathWin": "C:\\Espressif",
+  "idf.pythonBinPathWin": "C:\\Espressif\\python_env\\idf5.5_py3.11_env\\Scripts\\python.exe",
   "idf.customExtraVars": {
     "IDF_TARGET": "esp32p4"
   },
+  "idf.openOcdConfigs": [
+    "board/esp32p4-builtin.cfg"
+  ],
+  "idf.flashType": "UART",
+  "idf.portWin": "COM7",
+
+  // ---- CMake Tools --------------------------------------------------------
+  //
+  // Keep the generic CMake Tools extension away from this folder. It configures
+  // with the ambient environment and its own generator, which for an ESP-IDF
+  // project means: riscv32-esp-elf-gcc is not on PATH (only export.bat puts it
+  // there), the generator is MSBuild instead of Ninja, and the ESP-IDF that
+  // gets loaded is whatever IDF_PATH happens to say. Worse, it writes all that
+  // into build/ -- the same directory idf.py uses -- which leaves a cache that
+  // neither tool can then use.
+  //
+  // Build through the ESP-IDF extension ("ESP-IDF: Build your project") or the
+  // terminal instead. If CMake Tools still tries to configure, disable it for
+  // this workspace from the Extensions view; settings alone cannot stop every
+  // path into it.
+  //
+  // The simulator under sim/ IS a plain CMake project and works fine with CMake
+  // Tools -- point cmake.sourceDirectory at sim/ in a separate window if you
+  // want that.
+  "cmake.configureOnOpen": false,
+  "cmake.configureOnEdit": false,
+  "cmake.automaticReconfigure": false,
+
+  // ---- clangd -------------------------------------------------------------
+  //
+  // Reads build/compile_commands.json, which idf.py writes.
   "clangd.path": "C:\\Espressif\\tools\\esp-clang\\esp-19.1.2_20250312\\esp-clang\\bin\\clangd.exe",
   "clangd.arguments": [
     "--background-index",
     "--query-driver=**",
     "--compile-commands-dir=c:\\dev\\idf\\FmsLikeUI\\build"
-  ],
-  "idf.openOcdConfigs": [
-    "board/esp32p4-builtin.cfg"
-  ],
-  "idf.flashType": "JTAG",
-  "idf.portWin": "COM7"
+  ]
 }
