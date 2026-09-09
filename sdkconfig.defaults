@@ -27,6 +27,13 @@ CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
 CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
 
+# --- Console. The default puts it on UART0, whose pins go nowhere we can reach:
+#     the only port this board exposes is the P4's USB-Serial-JTAG, which is the
+#     COM port we already flash over. Left on UART0, `tools/serial_capture.py`
+#     returns zero bytes and the board reads as a silent one -- including when it
+#     is panicking, which is exactly when the log is worth having. ---
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
 # --- Build ---
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
 CONFIG_FREERTOS_HZ=1000
