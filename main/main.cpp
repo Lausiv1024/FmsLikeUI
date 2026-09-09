@@ -162,8 +162,9 @@ extern "C" void app_main(void) {
         const fmsui::FrameStats &f = fmsui::FmsApp::instance().stats();
         ESP_LOGI(kTag,
                  "   fmsui: %" PRIu32 " builds | %" PRIu32 " widgets | %" PRIu32 " lv_objs (+%" PRIu32
-                 " new, %" PRIu32 " moved) | arena %" PRIu32 " B",
-                 f.builds, f.widgets, f.lv_objects, f.lv_created, f.lv_moved, f.arena_bytes);
+                 " new, %" PRIu32 " moved, %" PRIu32 " retext) | arena %" PRIu32 " B",
+                 f.builds, f.widgets, f.lv_objects, f.lv_created, f.lv_moved, f.lv_retexted,
+                 f.arena_bytes);
         ESP_LOGI(kTag,
                  "   fmsui: total %5" PRIu32 " us = build %5" PRIu32 " + layout %5" PRIu32
                  " + paint %5" PRIu32,

@@ -156,7 +156,7 @@ void RenderLv::paint(PaintContext &ctx, Offset origin) {
         painted_size_ = size;
     }
 
-    syncLv(lv_);
+    syncLv(ctx, lv_);
 
     /* LVGL draws children in index order, so handing out consecutive indices in
      * paint order is what makes a Stack's later children land on top. */
@@ -201,7 +201,7 @@ lv_obj_t *RenderText::createLv(lv_obj_t *parent) {
     return o;
 }
 
-void RenderText::syncLv(lv_obj_t *obj) {
+void RenderText::syncLv(PaintContext &ctx, lv_obj_t *obj) {
     const lv_style_t *want = textStyle(font != nullptr ? font : LV_FONT_DEFAULT, color, align);
     if (applied_style_ != want) {
         if (applied_style_ != nullptr) {
@@ -216,6 +216,7 @@ void RenderText::syncLv(lv_obj_t *obj) {
     if (applied_text_ != text) {
         lv_label_set_text(obj, text.c_str());
         applied_text_ = text;
+        ctx.retexted++;
     }
 }
 
@@ -240,7 +241,7 @@ lv_obj_t *RenderDecoratedBox::createLv(lv_obj_t *parent) {
     return o;
 }
 
-void RenderDecoratedBox::syncLv(lv_obj_t *obj) {
+void RenderDecoratedBox::syncLv(PaintContext &ctx, lv_obj_t *obj) {
     const lv_style_t *want = boxStyle(decoration);
     if (applied_style_ == want) return;
 
@@ -425,7 +426,7 @@ lv_obj_t *RenderGestureDetector::createLv(lv_obj_t *parent) {
     return o;
 }
 
-void RenderGestureDetector::syncLv(lv_obj_t *obj) {
+void RenderGestureDetector::syncLv(PaintContext &ctx, lv_obj_t *obj) {
     /* A detector with nothing to call must not take the touch: LVGL's hit test
      * stops at the topmost clickable object, so leaving the flag on would let a
      * disabled button swallow a tap meant for a dropdown's barrier behind it --

@@ -51,6 +51,19 @@ public:
      * memmoves the parent's child array and invalidates the old and new areas,
      * which is what makes reordering a long list expensive. */
     uint32_t moved = 0;
+
+    /* ...and how many labels had their text rewritten.
+     *
+     * Neither of the two above sees this, and it is not small: lv_label_set_text
+     * reallocates and invalidates, about 0.18ms each on the Tab5. Stepping an
+     * 8-row FmsWindow creates nothing and moves nothing and still spends 8.6ms
+     * here -- a frame that reads as free until it is counted.
+     *
+     * Count it rather than deriving it from the rows on screen. That step was
+     * assumed to rewrite 56 strings, one per cell; it rewrites 47, because the
+     * cells that read the same on both rows are compared and skipped. Creating
+     * a label writes its text too, so a first paint reports it under both. */
+    uint32_t retexted = 0;
 };
 
 enum class FlexFit : uint8_t { Tight, Loose };
@@ -110,8 +123,13 @@ protected:
 
     /* Push whatever changed into LVGL.  Called after the object exists and has
      * been positioned. Implementations must compare before they write: an
-     * unnecessary lv_label_set_text() reallocates and invalidates the area. */
-    virtual void syncLv(lv_obj_t *obj) { (void)obj; }
+     * unnecessary lv_label_set_text() reallocates and invalidates the area --
+     * and must report the writes they do make, through `ctx`, because a cost
+     * nobody counts is one nobody optimises. */
+    virtual void syncLv(PaintContext &ctx, lv_obj_t *obj) {
+        (void)ctx;
+        (void)obj;
+    }
 
     lv_obj_t *lv_ = nullptr;
 
@@ -135,7 +153,7 @@ public:
 
 protected:
     lv_obj_t *createLv(lv_obj_t *parent) override;
-    void syncLv(lv_obj_t *obj) override;
+    void syncLv(PaintContext &ctx, lv_obj_t *obj) override;
 
 private:
     /* Measuring text means walking the string and summing glyph widths, and
@@ -173,7 +191,7 @@ public:
 
 protected:
     lv_obj_t *createLv(lv_obj_t *parent) override;
-    void syncLv(lv_obj_t *obj) override;
+    void syncLv(PaintContext &ctx, lv_obj_t *obj) override;
 
 private:
     const lv_style_t *applied_style_ = nullptr;
@@ -235,7 +253,7 @@ public:
 
 protected:
     lv_obj_t *createLv(lv_obj_t *parent) override;
-    void syncLv(lv_obj_t *obj) override;
+    void syncLv(PaintContext &ctx, lv_obj_t *obj) override;
 
 private:
     static void handleEvent(lv_event_t *e);

@@ -58,12 +58,12 @@ void printStats(const char *what) {
     if (!g_print_stats) return;
     const fmsui::FrameStats &s = fmsui::FmsApp::instance().stats();
     std::printf("stats %-10s rows=%d widgets=%u lv_objs=%u lv_created=%u lv_moved=%u "
-                "build=%uus layout=%uus paint=%uus total=%uus\n",
+                "lv_retexted=%u build=%uus layout=%uus paint=%uus total=%uus\n",
                 what, g_rows, static_cast<unsigned>(s.widgets),
                 static_cast<unsigned>(s.lv_objects), static_cast<unsigned>(s.lv_created),
-                static_cast<unsigned>(s.lv_moved), static_cast<unsigned>(s.build_us),
-                static_cast<unsigned>(s.layout_us), static_cast<unsigned>(s.paint_us),
-                static_cast<unsigned>(s.total_us));
+                static_cast<unsigned>(s.lv_moved), static_cast<unsigned>(s.lv_retexted),
+                static_cast<unsigned>(s.build_us), static_cast<unsigned>(s.layout_us),
+                static_cast<unsigned>(s.paint_us), static_cast<unsigned>(s.total_us));
 }
 
 /* Scripted touch, so a headless run can prove the whole chain -- hit test,

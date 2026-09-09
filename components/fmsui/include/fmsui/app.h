@@ -37,12 +37,16 @@ struct FrameStats {
      * widget count, not even lv_objects -- is what says whether the frame fits.
      *
      * It is not the whole story for every frame, though. Rewriting a label's
-     * text costs about 0.14ms on the Tab5 and is counted nowhere here, so a
-     * frame can read 0 created and 0 moved and still take 9ms: that is exactly
-     * what stepping an FmsWindow does, changing 56 strings and nothing else.
-     * See docs/PERF.md; a low lv_moved means a reorder was cheap, not that the
-     * frame was. */
+     * text costs about 0.18ms on the Tab5, and a frame can read 0 created and
+     * 0 moved and still take 9ms: that is exactly what stepping an FmsWindow
+     * does. See docs/PERF.md; a low lv_moved means a reorder was cheap, not
+     * that the frame was. */
     uint32_t lv_moved = 0;
+
+    /* ...and of which had their text rewritten, at about 0.18ms each on the
+     * Tab5. This is the one that says what a window step cost, the way lv_moved
+     * is the one that says what a reorder cost. */
+    uint32_t lv_retexted = 0;
     uint32_t arena_bytes = 0;  /* arena high-water mark */
 
     /* The pass, broken into its three phases -- guessing which one costs is how

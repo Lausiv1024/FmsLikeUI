@@ -124,6 +124,7 @@ void FmsApp::frame() {
     stats_.lv_objects = static_cast<uint32_t>(ctx.next_index);
     stats_.lv_created = ctx.created;
     stats_.lv_moved = ctx.moved;
+    stats_.lv_retexted = ctx.retexted;
     stats_.arena_bytes = static_cast<uint32_t>(arenas_.current().highWaterMark());
     stats_.build_us = t_built - t0;
     stats_.layout_us = t_laid_out - t_built;

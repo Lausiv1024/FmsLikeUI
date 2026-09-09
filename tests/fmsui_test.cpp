@@ -7,6 +7,7 @@
  */
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <atomic>
 #include <functional>
@@ -987,6 +988,125 @@ void test_a_pager_at_an_end_keeps_its_shape() {
     delete root;
 }
 
+/* ---- Paint accounting -------------------------------------------------- */
+
+/* A display, so paint has somewhere to push.  Every test above this line works
+ * on the render tree alone; counting what reached LVGL needs LVGL. */
+lv_display_t *headlessDisplay() {
+    static lv_display_t *disp = nullptr;
+    if (disp != nullptr) return disp;
+
+    constexpr int32_t kW = 320;
+    constexpr int32_t kH = 240;
+    static auto *fb = static_cast<uint8_t *>(std::calloc(static_cast<size_t>(kW) * kH * 2, 1));
+
+    disp = lv_display_create(kW, kH);
+    lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB565);
+    lv_display_set_buffers(disp, fb, nullptr, static_cast<size_t>(kW) * kH * 2,
+                           LV_DISPLAY_RENDER_MODE_DIRECT);
+    lv_display_set_flush_cb(disp,
+                            [](lv_display_t *d, const lv_area_t *, uint8_t *) {
+                                lv_display_flush_ready(d);  // nothing to push anywhere
+                            });
+    return disp;
+}
+
+void test_paint_counts_the_text_it_rewrites() {
+    std::printf("paint: a rewritten label is counted, an unchanged one is not\n");
+
+    lv_display_t *disp = headlessDisplay();
+    lv_obj_t *screen = lv_display_get_screen_active(disp);
+
+    BuildArenas arenas;
+    BuildOwner owner;
+
+    const auto build = [](const char *a, const char *b) {
+        return new TestRoot(
+            new Column{{.children = {new Text{{.text = a}}, new Text{{.text = b}}}}});
+    };
+
+    const auto paint = [&](Element *el) {
+        auto *view = static_cast<RenderView *>(el->renderObject());
+        view->screen = Size{320, 240};
+        view->layout(BoxConstraints::tight(view->screen));
+
+        PaintContext ctx;
+        ctx.root = screen;
+        view->paint(ctx, Offset{0, 0});
+        return ctx;
+    };
+
+    arenas.beginBuild();
+    Element *el = build("ALPHA", "BRAVO")->createElement();
+    el->mount(nullptr, &owner);
+
+    const PaintContext first = paint(el);
+    CHECK(first.created == 2);
+    CHECK(first.retexted == 2);  // creating a label writes its text as well
+
+    /* Same strings: there is nothing to push, and pushing anyway would cost a
+     * reallocation and an invalidation per label. */
+    arenas.beginBuild();
+    el->update(build("ALPHA", "BRAVO"));
+    const PaintContext again = paint(el);
+    CHECK(again.created == 0);
+    CHECK(again.moved == 0);
+    CHECK(again.retexted == 0);
+
+    /* One string changed.  This is the frame that used to be invisible: nothing
+     * is created, nothing moves, and on the device it still costs 0.14ms -- so
+     * `created` and `moved` both reading zero says nothing about what it cost. */
+    arenas.beginBuild();
+    el->update(build("ALPHA", "CHARLIE"));
+    const PaintContext one = paint(el);
+    CHECK(one.created == 0);
+    CHECK(one.moved == 0);
+    CHECK(one.retexted == 1);
+
+    el->unmount();
+    delete el;
+}
+
+void test_stepping_a_window_is_all_text_and_no_structure() {
+    std::printf("paint: a window step rewrites every row and disturbs nothing\n");
+
+    lv_display_t *disp = headlessDisplay();
+    lv_obj_t *screen = lv_display_get_screen_active(disp);
+
+    BuildArenas arenas;
+    BuildOwner owner;
+
+    arenas.beginBuild();
+    Element *el = windowOf(0, false)->createElement();
+    el->mount(nullptr, &owner);
+
+    const auto paint = [&](Element *e) {
+        auto *view = static_cast<RenderView *>(e->renderObject());
+        view->screen = Size{320, 240};
+        view->layout(BoxConstraints::tight(view->screen));
+
+        PaintContext ctx;
+        ctx.root = screen;
+        view->paint(ctx, Offset{0, 0});
+        return ctx;
+    };
+
+    (void)paint(el);  // first pass creates everything; the step is what matters
+
+    arenas.beginBuild();
+    el->update(windowOf(1, false));
+    const PaintContext step = paint(el);
+
+    /* The shape of the whole argument for paging, in three numbers: a step is
+     * one text write per visible row, and nothing else at all. */
+    CHECK(step.created == 0);
+    CHECK(step.moved == 0);
+    CHECK(step.retexted == 3);  // the window is three rows wide in these tests
+
+    el->unmount();
+    delete el;
+}
+
 /* ---- Cross-thread ------------------------------------------------------ */
 
 void test_request_from_another_thread_is_seen() {
@@ -1143,6 +1263,9 @@ int main() {
     test_stepping_an_unkeyed_window_only_rewrites_text();
     test_keying_the_rows_of_a_window_rebuilds_them();
     test_a_pager_at_an_end_keeps_its_shape();
+
+    test_paint_counts_the_text_it_rewrites();
+    test_stepping_a_window_is_all_text_and_no_structure();
 
     test_request_from_another_thread_is_seen();
     test_a_request_during_a_build_is_not_lost();

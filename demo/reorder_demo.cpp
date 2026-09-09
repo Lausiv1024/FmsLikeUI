@@ -183,6 +183,12 @@ public:
         /* lv_created is the number that matters for the claim, and paint_us for
          * the cost: paint is where every lv_obj whose index moved gets told.
          *
+         * lv_retexted is here as the control.  A reorder moves rows without
+         * changing what they say, so it stays near zero while lv_moved climbs --
+         * which is the exact mirror of the F-PLN demo, where the window steps
+         * without moving anything and rewrites every string on screen. The two
+         * screens between them are why paint needs both numbers.
+         *
          * "PREV FRAME" is not hedging, it is what these are.  FmsApp writes the
          * stats after paint and this build() runs before that, so an interaction
          * can never show its own cost -- tap REVERSE and you are reading what
@@ -196,10 +202,10 @@ public:
          * serial log, which is sampled outside the frame and so is never stale. */
         Widget *readout = new Text{{
             .text = fmt("PREV FRAME: builds %" PRIu32 " | widgets %" PRIu32 " | lv_objs %" PRIu32
-                        " | lv_created %" PRIu32 " | build %" PRIu32 " us | layout %" PRIu32
-                        " us | paint %" PRIu32 " us",
-                        s.builds, s.widgets, s.lv_objects, s.lv_created, s.build_us,
-                        s.layout_us, s.paint_us),
+                        " | lv_created %" PRIu32 " | lv_moved %" PRIu32 " | lv_retexted %" PRIu32
+                        " | build %" PRIu32 " us | layout %" PRIu32 " us | paint %" PRIu32 " us",
+                        s.builds, s.widgets, s.lv_objects, s.lv_created, s.lv_moved,
+                        s.lv_retexted, s.build_us, s.layout_us, s.paint_us),
             .font = t.font.unit,
             .color = t.color.computed}};
         Widget *caption = new Text{{

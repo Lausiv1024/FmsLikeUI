@@ -13,10 +13,16 @@
  * arrived at the bottom instead.  On the Tab5 that is 11.6ms against 29.8ms per
  * step: a third of the frame budget against nine tenths of it.
  *
- * Note what the unkeyed 11.6ms is *not*: a floor.  Nothing is created and
- * nothing moves, but all 56 strings on screen are rewritten, and a label's text
- * costs about 0.14ms on the device.  A frame can read zero and zero and still
- * be most of a millisecond per line.
+ * Note what the unkeyed 11.8ms is *not*: a floor.  Nothing is created and
+ * nothing moves, but 47 labels are rewritten, and a label's text costs about
+ * 0.18ms on the device.  A frame can read zero and zero and still be most of a
+ * millisecond per line.
+ *
+ * 47, not the 56 cells on screen: the ones reading the same on both rows --
+ * every `--:--`, most `BEND1A` -- are compared and skipped.  That is also why
+ * lv_retexted is counted rather than worked out from the row count, and why the
+ * readout shows it. Six of those 47 are the readout rewriting its own numbers:
+ * the instrument is on the screen it measures, and it costs about 1ms a frame.
  */
 
 #include "fplan_demo.h"
@@ -345,6 +351,14 @@ private:
                           .color = s.lv_created == 0 ? t.color.computed : t.color.attention}},
                 new Text{{.text = fmt("lv_moved   %" PRIu32, s.lv_moved), .font = t.font.label,
                           .color = s.lv_moved == 0 ? t.color.computed : t.color.attention}},
+                /* Not green at zero, because zero is not where this one lives:
+                 * a step rewrites 47 labels whatever else it does, and that is
+                 * most of what the step costs.  It is here to stop the two above
+                 * from reading as "the frame was free" -- and six of the 47 are
+                 * these very lines, which is worth knowing before trusting any
+                 * number on this panel. */
+                new Text{{.text = fmt("lv_retexted %" PRIu32, s.lv_retexted),
+                          .font = t.font.label, .color = t.color.entry}},
                 new Text{{.text = fmt("build  %" PRIu32 " us", s.build_us), .font = t.font.unit,
                           .color = t.color.label}},
                 new Text{{.text = fmt("layout %" PRIu32 " us", s.layout_us), .font = t.font.unit,
