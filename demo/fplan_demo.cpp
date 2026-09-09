@@ -6,12 +6,17 @@
  *
  * The panel is drawn at the proportions of the real screen and the controls sit
  * beside it, because this is an instrument as much as a page.  What it is here
- * to show is in the readout: stepping the window changes only strings, so
- * lv_created and lv_moved both stay at zero and paint stays at its floor,
- * however long the plan is.  Turn KEYS on -- the obvious thing to do to a list,
- * and the wrong one here -- and each step destroys the row that left the top and
- * builds the one that arrived at the bottom: 7 created and 7 moved, and three
- * times the paint, for a step that changed nothing but eight lines of text.
+ * to show is in the readout: stepping the window creates no lv_obj and moves
+ * none, however long the plan is, because the rows are matched slot for slot.
+ * Turn KEYS on -- the obvious thing to do to a list, and the wrong one here --
+ * and each step destroys the row that left the top and builds the one that
+ * arrived at the bottom instead.  On the Tab5 that is 11.6ms against 29.8ms per
+ * step: a third of the frame budget against nine tenths of it.
+ *
+ * Note what the unkeyed 11.6ms is *not*: a floor.  Nothing is created and
+ * nothing moves, but all 56 strings on screen are rewritten, and a label's text
+ * costs about 0.14ms on the device.  A frame can read zero and zero and still
+ * be most of a millisecond per line.
  */
 
 #include "fplan_demo.h"

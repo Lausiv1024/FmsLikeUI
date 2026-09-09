@@ -33,9 +33,15 @@ struct FrameStats {
     uint32_t lv_objects = 0;   /* lv_objs the last paint touched */
     uint32_t lv_created = 0;   /* ...of which had to be created */
     /* ...and of which had to be told they had moved in the z-order.  On the
-     * device this is what a reorder costs: measured on the Tab5, paint is
-     * 2.3ms + 0.46ms per moved object, so this number -- not the widget count,
-     * not even lv_objects -- is what says whether a frame will fit. */
+     * device a move costs about 0.46ms, so for a reorder this number -- not the
+     * widget count, not even lv_objects -- is what says whether the frame fits.
+     *
+     * It is not the whole story for every frame, though. Rewriting a label's
+     * text costs about 0.14ms on the Tab5 and is counted nowhere here, so a
+     * frame can read 0 created and 0 moved and still take 9ms: that is exactly
+     * what stepping an FmsWindow does, changing 56 strings and nothing else.
+     * See docs/PERF.md; a low lv_moved means a reorder was cheap, not that the
+     * frame was. */
     uint32_t lv_moved = 0;
     uint32_t arena_bytes = 0;  /* arena high-water mark */
 

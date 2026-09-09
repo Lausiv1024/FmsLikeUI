@@ -300,8 +300,10 @@ struct FmsWindowArgs {
  * waypoint rather than to a line on the screen, so stepping the window destroys
  * the row that fell off the top and builds the one that arrived at the bottom.
  * Unkeyed, the rows match slot for slot and a step rewrites their strings and
- * nothing else. Measured on the F-PLN demo, that is 7 lv_objs created and 7
- * moved per step against none at all, and about three times the paint.
+ * nothing else. Measured on the Tab5 with the F-PLN demo, one step of the
+ * window costs 11.6ms unkeyed and 29.8ms keyed -- 35% of a 33ms frame against
+ * 90% of one. In the simulator the same difference is 0.8ms against 2.3ms,
+ * which is why it had to be measured on the device to mean anything.
  *
  * The keyed case is only that cheap because every row there has the same number
  * of lv_objs, so the survivors keep the indices they had. Give one row a field
