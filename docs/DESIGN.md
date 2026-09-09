@@ -241,6 +241,33 @@ FmsApp::instance().requestFrame();               // そのあとで、これ
 アサートに変えるためのものです(ユニットテストはツリーを直接叩いてフレームループを持たないので、
 スレッドが記録されず、この検査は無効のまま通ります)。
 
+#### スレッドの識別子はプラットフォームが渡す
+
+**`std::this_thread::get_id()` は実機で使えません。** ESP-IDF ではこれが `pthread_self()` を
+呼び、**pthread として作られていない FreeRTOS タスクから呼ばれると assert して落ちます** ——
+そしてフレームループが走るのは `esp_lvgl_port` が作る素の FreeRTOS タスクです。最初にこれを
+入れたときは実機が**最初のフレームでリブートループ**しました。ビルドは通っていたので、
+コンパイルの成功を動作確認と読み違えたのが原因です。
+
+なので識別子は、マイクロ秒クロックと同じく**プラットフォームから注入**します:
+
+```cpp
+using ThreadId = uintptr_t;                      // 比較しかしない
+FmsApp::instance().setThreadId(thread_id);       // 最初のフレームより前に
+```
+
+| | 渡すもの |
+|---|---|
+| 実機 | `(ThreadId)xTaskGetCurrentTaskHandle()` |
+| シム / ホストテスト | `std::hash<std::thread::id>{}(std::this_thread::get_id())` |
+| 未設定 | **検査ごと無効**(bind もせず、関数も呼ばない) |
+
+最後の行が要点です。**診断機能が仕事を止めてはいけない** —— 答え方を教わっていないときに
+推測すると、まさに上のリブートループになります。この「未設定なら何も呼ばない」は
+`test_without_a_thread_id_the_check_is_off` で押さえてあります。
+
+これで `components/fmsui` は ESP-IDF に依存しないまま、実機でだけ意味のある識別子を使えます。
+
 ### requestFrame() が安全な理由
 
 `BuildOwner::needs_build_` は `std::atomic<bool>` で、`scheduleBuild()` は release ストア 1 回です。

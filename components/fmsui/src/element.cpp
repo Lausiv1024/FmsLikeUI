@@ -6,6 +6,8 @@
 
 namespace fmsui {
 
+ThreadIdFn BuildOwner::thread_id_fn_ = nullptr;
+
 /* ---- Widget ------------------------------------------------------------ */
 
 Widget::Widget() {

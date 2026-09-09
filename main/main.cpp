@@ -68,6 +68,17 @@ void on_refr_ready(lv_event_t *) {
 
 uint32_t micros() { return static_cast<uint32_t>(esp_timer_get_time()); }
 
+/* Who is running, for the framework's wrong-thread check.
+ *
+ * Not std::this_thread::get_id(): that goes through pthread_self(), which
+ * asserts when called from a FreeRTOS task that was not created as a pthread --
+ * and the frame loop runs on the task esp_lvgl_port creates, which is one. The
+ * board rebooted on its first frame until this replaced it. The task handle is
+ * the identity FreeRTOS actually has. */
+fmsui::ThreadId thread_id() {
+    return reinterpret_cast<fmsui::ThreadId>(xTaskGetCurrentTaskHandle());
+}
+
 void log_memory() {
     ESP_LOGI(kTag, "heap: internal free %u (largest %u) | psram free %u (largest %u)",
              static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
@@ -101,6 +112,7 @@ extern "C" void app_main(void) {
     m0_probe_build("M5 Tab5 / ESP32-P4");
 #else
     fmsui::FmsApp::instance().setClock(micros);
+    fmsui::FmsApp::instance().setThreadId(thread_id);
 #if defined(FMSUI_DEMO_M1)
     fmsui::runApp([] { return m1_demo_build(); });
 #elif defined(FMSUI_DEMO_CATALOG)

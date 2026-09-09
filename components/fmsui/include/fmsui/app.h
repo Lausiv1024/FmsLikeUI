@@ -119,6 +119,13 @@ public:
     using MicrosClock = uint32_t (*)();
     void setClock(MicrosClock clock) { clock_ = clock; }
 
+    /* How to ask which thread is running, so that setState() from the wrong one
+     * can be caught rather than corrupting the arena in the background. Install
+     * it before the first frame; see ThreadId in element.h for why the framework
+     * cannot work this out for itself. Without it the check is off and nothing
+     * else changes. */
+    void setThreadId(ThreadIdFn fn) { BuildOwner::setThreadIdFn(fn); }
+
 private:
     void frame();
     static void timerCb(lv_timer_t *t);

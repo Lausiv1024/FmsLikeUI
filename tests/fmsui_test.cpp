@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstring>
 #include <atomic>
+#include <functional>
 #include <string>
 #include <thread>
 #include <utility>
@@ -1028,8 +1029,36 @@ void test_a_request_during_a_build_is_not_lost() {
     CHECK(owner.takeNeedsBuild());
 }
 
+/* What the simulator and the host install.  The device installs its FreeRTOS
+ * task handle instead; the framework only ever compares these. */
+ThreadId hostThreadId() {
+    return static_cast<ThreadId>(std::hash<std::thread::id>{}(std::this_thread::get_id()));
+}
+
+void test_without_a_thread_id_the_check_is_off() {
+    std::printf("threads: with no thread-id function the check stays out of the way\n");
+
+    BuildOwner::setThreadIdFn(nullptr);
+
+    BuildOwner owner;
+    /* This is the state the device is in when nobody installs one, and it has to
+     * be harmless.  It was not: the check used to call std::this_thread::get_id()
+     * unconditionally, which on ESP-IDF goes through pthread_self() and asserts
+     * outright on a FreeRTOS task that was not created as a pthread -- so the
+     * board rebooted on its first frame.  Never binding, and never asking, is
+     * the only safe thing to do when the platform has not said how to answer. */
+    owner.bindToCurrentThread();
+    CHECK(!owner.bound());
+    CHECK(owner.onBuildThread());  // permissive: a diagnostic must not deny work
+
+    std::thread other([&] { CHECK(owner.onBuildThread()); });
+    other.join();
+}
+
 void test_the_frame_thread_is_recorded() {
     std::printf("threads: the build thread is remembered once bound\n");
+
+    BuildOwner::setThreadIdFn(hostThreadId);
 
     BuildOwner owner;
     CHECK(!owner.bound());
@@ -1042,6 +1071,8 @@ void test_the_frame_thread_is_recorded() {
     /* Bound to a thread that is not this one, so this one is not allowed to
      * mutate the tree -- which is what markNeedsBuild() asserts on. */
     CHECK(!owner.onBuildThread());
+
+    BuildOwner::setThreadIdFn(nullptr);  // global state: leave it as it was found
 }
 
 void test_the_isr_requester_sets_the_same_flag() {
@@ -1115,6 +1146,7 @@ int main() {
 
     test_request_from_another_thread_is_seen();
     test_a_request_during_a_build_is_not_lost();
+    test_without_a_thread_id_the_check_is_off();
     test_the_frame_thread_is_recorded();
     test_the_isr_requester_sets_the_same_flag();
     test_arena_resets_between_builds();

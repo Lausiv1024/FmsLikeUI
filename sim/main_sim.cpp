@@ -11,6 +11,8 @@
 
 #include <chrono>
 #include <cstdio>
+#include <functional>
+#include <thread>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
@@ -88,6 +90,14 @@ void step(int frames = 1) {
     }
 }
 
+/* Who is running, for the framework's wrong-thread check.  The host has real
+ * threads, so std::thread::id is the identity -- hashed down to the integer the
+ * framework compares, because it cannot name std::thread::id without dragging
+ * <thread> into a header the device also compiles. */
+fmsui::ThreadId thread_id_cb() {
+    return static_cast<fmsui::ThreadId>(std::hash<std::thread::id>{}(std::this_thread::get_id()));
+}
+
 uint32_t micros_cb() {
     using clock = std::chrono::steady_clock;
     static const clock::time_point start = clock::now();
@@ -101,6 +111,7 @@ void buildScreen(Demo demo, const char *platform) {
         return;
     }
     fmsui::FmsApp::instance().setClock(micros_cb);
+    fmsui::FmsApp::instance().setThreadId(thread_id_cb);
     if (demo == Demo::Pages) {
         fmsui::runApp([] { return fms_pages_build(); });
     } else if (demo == Demo::Catalog) {
