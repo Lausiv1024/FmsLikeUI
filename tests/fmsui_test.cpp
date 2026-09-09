@@ -767,6 +767,225 @@ void test_a_field_box_without_a_callback_keeps_its_shape() {
     delete root;
 }
 
+/* ---- Windowed lists ---------------------------------------------------- */
+
+const char *const kWindowItems[] = {"ALPHA", "BRAVO", "CHARLIE", "DELTA", "ECHO", "FOXTROT"};
+
+void test_a_window_position_clamps_at_both_ends() {
+    std::printf("window: the position clamps, and blank slots read as -1\n");
+
+    FmsWindowPos p;
+    p.count = 24;
+    p.window = 8;
+    p.step = 1;
+
+    CHECK(p.maxFirst() == 16);  // 24 - 8: the last full screen
+    CHECK(!p.canPrev());
+    CHECK(p.canNext());
+
+    p.next();
+    CHECK(p.first == 1);
+    CHECK(p.canPrev());
+
+    p.first = 16;
+    CHECK(!p.canNext());
+    p.next();
+    CHECK(p.first == 16);  // already at the end; next() is not an off-by-one
+
+    p.prev();
+    CHECK(p.first == 15);
+
+    /* A step of `window` is the same type doing page-at-a-time, and it clamps to
+     * the last full screen rather than overshooting into blanks. */
+    p.step = 8;
+    p.first = 0;
+    p.next();
+    CHECK(p.first == 8);
+    p.next();
+    CHECK(p.first == 16);
+    p.next();
+    CHECK(p.first == 16);
+
+    /* A list shorter than the window has nowhere to go, in either direction. */
+    FmsWindowPos q;
+    q.count = 3;
+    q.window = 8;
+    CHECK(q.maxFirst() == 0);
+    CHECK(!q.canNext());
+    CHECK(!q.canPrev());
+    CHECK(q.at(0) == 0);
+    CHECK(q.at(2) == 2);
+    CHECK(q.at(3) == -1);  // past the end of the list
+    CHECK(q.at(8) == -1);  // past the end of the window
+
+    /* And an empty one is not a special case anywhere. */
+    FmsWindowPos e;
+    e.window = 4;
+    CHECK(e.at(0) == -1);
+    CHECK(!e.canNext());
+    CHECK(!e.canPrev());
+}
+
+Widget *windowOf(int first, bool keyed) {
+    FmsWindowPos pos;
+    pos.count = 6;
+    pos.window = 3;
+    pos.first = first;
+
+    return new TestRoot(new FmsTheme{{
+        .data = testTheme(),
+        .child = new FmsWindow{{
+            .pos = pos,
+            .row =
+                [keyed](int index, int slot) -> Widget * {
+                    (void)slot;
+                    return new Text{{.text = index >= 0 ? Str(kWindowItems[index]) : Str("-----"),
+                                     .key = keyed && index >= 0 ? Key{index} : Key{}}};
+                },
+        }},
+    }});
+}
+
+void test_a_window_draws_a_row_per_slot_even_past_the_end() {
+    std::printf("window: a slot past the end of the list still draws\n");
+
+    BuildArenas arenas;
+    BuildOwner owner;
+
+    arenas.beginBuild();
+    Element *root = windowOf(0, false)->createElement();
+    root->mount(nullptr, &owner);
+    CHECK(textsAre(root, {"ALPHA", "BRAVO", "CHARLIE"}));
+
+    /* Hang the window off the end.  Three rows, still: the missing ones draw
+     * blank rather than being dropped, because a Column that gets shorter is a
+     * change of shape and costs the reconciler real work. */
+    arenas.beginBuild();
+    root->update(windowOf(5, false));
+    CHECK(textsAre(root, {"FOXTROT", "-----", "-----"}));
+
+    root->unmount();
+    delete root;
+}
+
+void test_stepping_an_unkeyed_window_only_rewrites_text() {
+    std::printf("window: stepping it disturbs nothing but the strings\n");
+
+    BuildArenas arenas;
+    BuildOwner owner;
+
+    arenas.beginBuild();
+    Element *root = windowOf(0, false)->createElement();
+    root->mount(nullptr, &owner);
+    CHECK(textsAre(root, {"ALPHA", "BRAVO", "CHARLIE"}));
+
+    std::vector<RenderObject *> before;
+    collectRenderObjects(root->renderObject(), before);
+
+    arenas.beginBuild();
+    root->update(windowOf(1, false));
+    CHECK(textsAre(root, {"BRAVO", "CHARLIE", "DELTA"}));
+
+    std::vector<RenderObject *> after;
+    collectRenderObjects(root->renderObject(), after);
+
+    /* The same objects, in the same order.  This is the whole claim behind
+     * paging rather than scrolling, said without LVGL in the room: nothing was
+     * created, so nothing had to be created on the panel either, and nothing
+     * changed position, so nothing had to be told that it had moved. */
+    CHECK(before == after);
+
+    /* All the way to the end, still the same objects. */
+    arenas.beginBuild();
+    root->update(windowOf(3, false));
+    CHECK(textsAre(root, {"DELTA", "ECHO", "FOXTROT"}));
+
+    std::vector<RenderObject *> at_end;
+    collectRenderObjects(root->renderObject(), at_end);
+    CHECK(before == at_end);
+
+    root->unmount();
+    delete root;
+}
+
+void test_keying_the_rows_of_a_window_rebuilds_them() {
+    std::printf("window: keys would make a step build and destroy rows\n");
+
+    BuildArenas arenas;
+    BuildOwner owner;
+
+    arenas.beginBuild();
+    Element *root = windowOf(0, true)->createElement();
+    root->mount(nullptr, &owner);
+    CHECK(textsAre(root, {"ALPHA", "BRAVO", "CHARLIE"}));
+
+    std::vector<RenderObject *> before;
+    collectRenderObjects(root->renderObject(), before);
+
+    arenas.beginBuild();
+    root->update(windowOf(1, true));
+    CHECK(textsAre(root, {"BRAVO", "CHARLIE", "DELTA"}));
+
+    std::vector<RenderObject *> after;
+    collectRenderObjects(root->renderObject(), after);
+
+    /* Same shape, different objects: the key tied each row to an item, so the
+     * row that fell off the top was destroyed and the one that arrived at the
+     * bottom was built.  That is right for a list that is reordered and wrong
+     * for one that is only looked through, and it is why FmsWindow does not key
+     * its rows.
+     *
+     * The test is here to fail if that ever stops being true, because the whole
+     * argument for the unkeyed window is that the keyed one costs more. */
+    CHECK(after.size() == before.size());
+    CHECK(before != after);
+
+    root->unmount();
+    delete root;
+}
+
+void test_a_pager_at_an_end_keeps_its_shape() {
+    std::printf("window: an arrow greying out does not rebuild the pager\n");
+
+    BuildArenas arenas;
+    BuildOwner owner;
+
+    const auto build = [](int first) {
+        FmsWindowPos pos;
+        pos.count = 6;
+        pos.window = 3;
+        pos.first = first;
+        return new TestRoot(new FmsTheme{{
+            .data = testTheme(),
+            .child = new FmsPager{{.pos = pos, .on_prev = [] {}, .on_next = [] {}}},
+        }});
+    };
+
+    /* At the top, where the up arrow is dead. */
+    arenas.beginBuild();
+    Element *root = build(0)->createElement();
+    root->mount(nullptr, &owner);
+
+    std::vector<RenderObject *> before;
+    collectRenderObjects(root->renderObject(), before);
+    CHECK(before.size() > 4);  // a row, two detectors, two boxes, two glyphs
+
+    /* Into the middle, off the far end, and back.  The arrows cross between live
+     * and dead every time the window reaches an end, which is often, so this has
+     * to cost nothing -- the same rule FmsButton follows. */
+    for (const int first : {1, 3, 0}) {
+        arenas.beginBuild();
+        root->update(build(first));
+
+        std::vector<RenderObject *> after;
+        collectRenderObjects(root->renderObject(), after);
+        CHECK(before == after);
+    }
+
+    root->unmount();
+    delete root;
+}
+
 /* ---- Cross-thread ------------------------------------------------------ */
 
 void test_request_from_another_thread_is_seen() {
@@ -887,6 +1106,12 @@ int main() {
 
     test_disabling_a_button_keeps_its_subtree();
     test_a_field_box_without_a_callback_keeps_its_shape();
+
+    test_a_window_position_clamps_at_both_ends();
+    test_a_window_draws_a_row_per_slot_even_past_the_end();
+    test_stepping_an_unkeyed_window_only_rewrites_text();
+    test_keying_the_rows_of_a_window_rebuilds_them();
+    test_a_pager_at_an_end_keeps_its_shape();
 
     test_request_from_another_thread_is_seen();
     test_a_request_during_a_build_is_not_lost();

@@ -10,6 +10,7 @@
  *   idf.py -DFMSUI_DEMO=catalog build  every FMS widget on one screen
  *   idf.py -DFMSUI_DEMO=m1 build       the core/theme demo
  *   idf.py -DFMSUI_DEMO=m0 build       the raw-LVGL bring-up probe
+ *   idf.py -DFMSUI_DEMO=fplan build    ACTIVE/F-PLN, a list stepped by its arrows
  *   idf.py -DFMSUI_DEMO=reorder -DFMSUI_ROWS=40 build
  *                                      keyed reconciliation, at the lv_obj count
  *                                      the reorder cost has to be judged at
@@ -30,6 +31,7 @@
 #include "fms_pages.h"
 #include "m0_probe.h"
 #include "m1_demo.h"
+#include "fplan_demo.h"
 #include "reorder_demo.h"
 
 namespace {
@@ -103,6 +105,8 @@ extern "C" void app_main(void) {
     fmsui::runApp([] { return m1_demo_build(); });
 #elif defined(FMSUI_DEMO_CATALOG)
     fmsui::runApp([] { return catalog_build(); });
+#elif defined(FMSUI_DEMO_FPLAN)
+    fmsui::runApp([] { return fplan_demo_build(); });
 #elif defined(FMSUI_DEMO_REORDER)
     fmsui::runApp([] { return reorder_demo_build(FMSUI_REORDER_ROWS); });
 #else

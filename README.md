@@ -45,6 +45,7 @@ cmake --build build-sim
 ./build-sim/fmsui_sim --tap 100,97 --shot out.png   # タップを合成してから撮る
 ./build-sim/fmsui_sim --demo pages           # ACTIVE/PERF + ACTIVE/INIT(既定)
 ./build-sim/fmsui_sim --demo catalog         # FMS ウィジェット全部
+./build-sim/fmsui_sim --demo fplan           # ACTIVE/F-PLN。窓送り(スクロールしない)
 ./build-sim/fmsui_sim --demo reorder         # キー付き再配置(KEYS を切るとどう壊れるかが見える)
 ./build-sim/fmsui_sim --demo reorder --rows 40 --stats   # 実機ページと同規模で並べ替えコストを測る
 ./build-sim/fmsui_sim --demo m1              # コア/テーマのデモ
@@ -79,6 +80,7 @@ Windows 側から `tools\idf.bat` で叩きます。`export.bat` を通してか
 tools\idf.bat set-target esp32p4
 tools\idf.bat build
 tools\idf.bat -p COM7 flash
+tools\idf.bat -DFMSUI_DEMO=fplan build
 tools\idf.bat -DFMSUI_DEMO=reorder -DFMSUI_ROWS=40 build
 ```
 

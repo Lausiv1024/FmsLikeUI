@@ -6,6 +6,7 @@ idf_component_register(
         "../demo/catalog.cpp"
         "../demo/fms_pages.cpp"
         "../demo/reorder_demo.cpp"
+        "../demo/fplan_demo.cpp"
     INCLUDE_DIRS
         "."
         "../demo"
@@ -23,6 +24,8 @@ elseif(FMSUI_DEMO STREQUAL "m1")
     target_compile_definitions(${COMPONENT_LIB} PRIVATE FMSUI_DEMO_M1=1)
 elseif(FMSUI_DEMO STREQUAL "catalog")
     target_compile_definitions(${COMPONENT_LIB} PRIVATE FMSUI_DEMO_CATALOG=1)
+elseif(FMSUI_DEMO STREQUAL "fplan")
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE FMSUI_DEMO_FPLAN=1)
 elseif(FMSUI_DEMO STREQUAL "reorder")
     # -DFMSUI_ROWS=40 puts the page at the same lv_obj count as ACTIVE/PERF +
     # ACTIVE/INIT, which is the scale the reorder cost has to be judged at.

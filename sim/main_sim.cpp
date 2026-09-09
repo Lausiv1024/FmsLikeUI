@@ -3,6 +3,7 @@
  *   fmsui_sim                      interactive SDL window, mouse acts as the finger
  *   fmsui_sim --shot out.png       render headless and dump a PNG
  *   fmsui_sim --demo m0            the raw-LVGL probe screen instead of the framework
+ *   fmsui_sim --demo fplan         ACTIVE/F-PLN: a windowed list, stepped not scrolled
  *
  * The headless mode is what lets the UI be verified without a display server,
  * and it renders through exactly the same LVGL pipeline as the window mode.
@@ -19,6 +20,7 @@
 #include "fmsui/fmsui.h"
 #include "catalog.h"
 #include "fms_pages.h"
+#include "fplan_demo.h"
 #include "m0_probe.h"
 #include "m1_demo.h"
 #include "reorder_demo.h"
@@ -42,7 +44,7 @@ uint32_t tick_cb() {
         std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - start).count());
 }
 
-enum class Demo { M0Probe, M1Core, Catalog, Pages, Reorder };
+enum class Demo { M0Probe, M1Core, Catalog, Pages, Reorder, Fplan };
 
 /* --rows N for the reorder demo, and --stats to print what each interaction
  * cost.  A tap that calls setState produces exactly one frame() pass, so the
@@ -106,6 +108,8 @@ void buildScreen(Demo demo, const char *platform) {
     } else if (demo == Demo::Reorder) {
         const int rows = g_rows;
         fmsui::runApp([rows] { return reorder_demo_build(rows); });
+    } else if (demo == Demo::Fplan) {
+        fmsui::runApp([] { return fplan_demo_build(); });
     } else {
         fmsui::runApp([] { return m1_demo_build(); });
     }
@@ -231,15 +235,19 @@ int main(int argc, char **argv) {
             } else if (std::strcmp(name, "reorder") == 0) {
                 demo = Demo::Reorder;
                 if (g_rows < 1) g_rows = 6;
+            } else if (std::strcmp(name, "fplan") == 0) {
+                demo = Demo::Fplan;
             } else {
                 std::fprintf(stderr,
-                             "unknown demo '%s' (expected m0, m1, catalog, pages or reorder)\n",
+                             "unknown demo '%s' (expected m0, m1, catalog, pages, reorder "
+                             "or fplan)\n",
                              name);
                 return 2;
             }
         } else {
             std::fprintf(stderr,
-                         "usage: %s [--demo m0|m1|catalog|pages|reorder] [--shot out.png] "
+                         "usage: %s [--demo m0|m1|catalog|pages|reorder|fplan] "
+                         "[--shot out.png] "
                          "[--frames N] [--tap X,Y]... [--rows N] [--stats]\n",
                          argv[0]);
             return 2;

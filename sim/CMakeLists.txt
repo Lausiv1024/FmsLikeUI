@@ -32,6 +32,7 @@ add_executable(fmsui_sim
   ${REPO_ROOT}/demo/catalog.cpp
   ${REPO_ROOT}/demo/fms_pages.cpp
   ${REPO_ROOT}/demo/reorder_demo.cpp
+  ${REPO_ROOT}/demo/fplan_demo.cpp
 )
 
 target_include_directories(fmsui_sim PRIVATE

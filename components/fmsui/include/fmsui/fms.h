@@ -235,6 +235,117 @@ private:
     FmsScaffoldArgs args_;
 };
 
+/* ---- Paging ------------------------------------------------------------ */
+
+/* Where a fixed-height window sits over a longer list.
+ *
+ * The real FMS has no scrollbar. It shows a fixed number of lines and steps the
+ * window along the flight plan one waypoint at a time, which is also the better
+ * fit for this framework: every RenderObject that paints owns an lv_obj, so a
+ * scroll view over N items has to materialise N of them -- or grow a
+ * virtualising layer to avoid it -- while a window of W rows only ever costs W,
+ * however long the list gets.
+ *
+ * This is a value rather than a widget, and it is meant to be shared: the page's
+ * State holds one and hands it to both FmsWindow and FmsPager. That is what lets
+ * the arrows sit somewhere the window is not -- in the list's own header row, or
+ * down in the scaffold's footer -- which they must, because a control that pages
+ * a region cannot itself be inside the region it pages.
+ */
+struct FmsWindowPos {
+    int count = 0;   /* items in the whole list */
+    int window = 1;  /* rows on screen -- a constant, blanks included */
+    int first = 0;   /* index of the item in the top row */
+    int step = 1;    /* 1 steps a waypoint at a time; `window` steps a page */
+
+    /* How far the window can be moved before it hangs off the end. Zero when
+     * the list is shorter than the window: there is nowhere to go. */
+    int maxFirst() const { return count > window ? count - window : 0; }
+
+    int clampFirst(int f) const {
+        const int hi = maxFirst();
+        if (f < 0) return 0;
+        return f > hi ? hi : f;
+    }
+
+    bool canPrev() const { return first > 0; }
+    bool canNext() const { return first < maxFirst(); }
+
+    void prev() { first = clampFirst(first - step); }
+    void next() { first = clampFirst(first + step); }
+
+    /* The item in `slot`, or -1 where the window hangs past the end of the list.
+     * Draw the blank row rather than dropping it: a list that gets shorter at
+     * the bottom changes the shape of the tree, and the reconciler then destroys
+     * and recreates lv_objs for what was only ever a text change. */
+    int at(int slot) const {
+        const int i = first + slot;
+        return (slot >= 0 && slot < window && i < count) ? i : -1;
+    }
+};
+
+struct FmsWindowArgs {
+    FmsWindowPos pos;
+    float spacing = 0;
+    /* Called once per row, with the item to draw or -1 for a row past the end.
+     * Must return a widget for every slot, blank ones included. */
+    std::function<Widget *(int index, int slot)> row{};
+    Key key{};
+};
+
+/* A Column of exactly `pos.window` rows, whatever the list is doing.
+ *
+ * The rows are deliberately unkeyed, which is the opposite of what a reorderable
+ * list wants and is right here for the same reason. A key ties an Element to a
+ * waypoint rather than to a line on the screen, so stepping the window destroys
+ * the row that fell off the top and builds the one that arrived at the bottom.
+ * Unkeyed, the rows match slot for slot and a step rewrites their strings and
+ * nothing else. Measured on the F-PLN demo, that is 7 lv_objs created and 7
+ * moved per step against none at all, and about three times the paint.
+ *
+ * The keyed case is only that cheap because every row there has the same number
+ * of lv_objs, so the survivors keep the indices they had. Give one row a field
+ * the others do not have and every object after it shifts as well -- which on
+ * the Tab5 is about half a millisecond each, and is what the reorder demo
+ * measures. Keys are for a list that is reordered. This one is not reordered,
+ * it is looked through.
+ */
+class FmsWindow : public StatelessWidget {
+public:
+    explicit FmsWindow(FmsWindowArgs a) : args_(std::move(a)) { key = args_.key; }
+    FMSUI_WIDGET(FmsWindow)
+    Widget *build(BuildContext &ctx) const override;
+
+private:
+    FmsWindowArgs args_;
+};
+
+struct FmsPagerArgs {
+    /* Read only to decide which arrows are live -- the pager never moves the
+     * window itself, because the position belongs to the page's State. */
+    FmsWindowPos pos;
+    VoidCallback on_prev{};
+    VoidCallback on_next{};
+    Key key{};
+};
+
+/* The two arrows, and nothing else: down first, then up, as on the reference
+ * screen. Knows about a window position but nothing about the window, so it can
+ * be placed anywhere -- which is the whole point of it being separate.
+ *
+ * At the ends of the list an arrow greys out. Like FmsButton, that varies the
+ * colour and the callback and never the shape, so reaching the last waypoint
+ * costs nothing to draw. */
+class FmsPager : public StatelessWidget {
+public:
+    explicit FmsPager(FmsPagerArgs a) : args_(std::move(a)) { key = args_.key; }
+    FMSUI_WIDGET(FmsPager)
+    Widget *build(BuildContext &ctx) const override;
+
+private:
+    FmsPagerArgs args_;
+};
+
 /* ---- Entry ------------------------------------------------------------- */
 
 /* The scratchpad: what you have typed but not yet put anywhere.  On the real

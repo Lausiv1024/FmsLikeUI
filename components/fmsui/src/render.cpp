@@ -193,6 +193,11 @@ lv_obj_t *RenderText::createLv(lv_obj_t *parent) {
     lv_obj_t *o = lv_label_create(parent);
     makeInert(o);
     lv_label_set_long_mode(o, LV_LABEL_LONG_CLIP);
+    /* A new lv_label says "Text".  syncLv only writes the string when it differs
+     * from what it last wrote, and it has written nothing yet -- so an empty
+     * Text would keep LVGL's placeholder and put the word "Text" on the screen.
+     * Start the object in the state syncLv believes it is in. */
+    lv_label_set_text(o, "");
     return o;
 }
 

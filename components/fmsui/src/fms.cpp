@@ -1,6 +1,8 @@
 #include "fmsui/fms.h"
 
+#include <cassert>
 #include <cstring>
+#include <utility>
 #include <vector>
 
 namespace fmsui {
@@ -481,6 +483,94 @@ Widget *FmsScaffold::build(BuildContext &ctx) const {
                 }},
             },
         }},
+    }};
+}
+
+/* ---- Paging ------------------------------------------------------------ */
+
+Widget *FmsWindow::build(BuildContext &ctx) const {
+    (void)FmsTheme::of(ctx);  // the rows read it; assert we are inside one
+    assert(args_.row && "FmsWindow without a row builder has nothing to draw");
+
+    const int n = args_.pos.window > 0 ? args_.pos.window : 0;
+
+    std::vector<Widget *> rows;
+    rows.reserve(static_cast<size_t>(n));
+    for (int slot = 0; slot < n; slot++) {
+        Widget *w = args_.row(args_.pos.at(slot), slot);
+        /* A null row would quietly shorten the Column, which is the one shape
+         * change the blank slots exist to prevent. */
+        assert(w != nullptr && "FmsWindow row builder must return a widget for every slot");
+        rows.push_back(w);
+    }
+
+    /* No keys: see the class comment.  Slot-for-slot is the whole trick. */
+    return new Column{{
+        .cross = CrossAxis::Stretch,
+        .main_size = MainAxisSize::Min,
+        .spacing = args_.spacing,
+        .children = WidgetList(rows.data(), rows.size()),
+    }};
+}
+
+namespace {
+
+/* One arrow in its box.  Drawn rather than typed, like the dropdown's triangle
+ * and for the same reason: B612 Mono has no U+25B2/U+25BC, and a drawn one takes
+ * the widget's colour instead of the font's size. */
+Widget *pagerArrow(const FmsThemeData &t, bool down, bool live, VoidCallback on_tap) {
+    const Color mark = live ? t.color.entry : t.color.border;
+
+    Widget *glyph = new CustomPaint{{
+        .painter =
+            [mark, down](Canvas &canvas, Size size) {
+                const float w = 20;
+                const float h = 11;
+                const float x = (size.width - w) / 2;
+                const float y = (size.height - h) / 2;
+                const Offset up[3] = {{x + w / 2, y}, {x + w, y + h}, {x, y + h}};
+                const Offset dn[3] = {{x, y}, {x + w, y}, {x + w / 2, y + h}};
+                canvas.polygon(down ? dn : up, 3, mark, Color::transparent(), 0);
+            },
+        .preferred = Size{24, 12},
+    }};
+
+    /* Wider than the glyph on purpose.  The triangle is small because that is
+     * how the reference screen draws it; the box around it is finger-sized
+     * because this one is a touch panel and the arrow is the only way through a
+     * long flight plan. */
+    Widget *box = new Container{{
+        .width = t.metric.button_height * 1.2F,
+        .height = t.metric.button_height,
+        .color = t.color.button,
+        .border_color = t.color.border,
+        .border_width = 1,
+        .alignment = Alignment::center(),
+        .child = glyph,
+    }};
+
+    /* Greying out varies the callback and the colour, never the shape -- the
+     * same rule FmsButton follows, and it matters more here, because these two
+     * cross between live and dead every time the window reaches an end. */
+    return new GestureDetector{{
+        .on_tap = live ? std::move(on_tap) : VoidCallback{},
+        .child = box,
+    }};
+}
+
+}  // namespace
+
+Widget *FmsPager::build(BuildContext &ctx) const {
+    const FmsThemeData &t = FmsTheme::of(ctx);
+
+    return new Row{{
+        .cross = CrossAxis::Center,
+        .main_size = MainAxisSize::Min,
+        .spacing = 6,
+        .children = {
+            pagerArrow(t, true, args_.pos.canNext(), args_.on_next),
+            pagerArrow(t, false, args_.pos.canPrev(), args_.on_prev),
+        },
     }};
 }
 
