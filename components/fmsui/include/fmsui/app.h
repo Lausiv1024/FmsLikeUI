@@ -108,19 +108,25 @@ public:
 
     /* Force a rebuild on the next frame. setState() does this for you.
      *
-     * This is the only entry point that may be called from another task, and it
-     * is the whole cross-task story: publish what changed somewhere the build
-     * can read it, then call this. It is one release store -- no allocation, no
-     * locking, and it cannot block, so a sensor task at 100Hz can call it on
-     * every sample without ever waiting on the UI.
+     * This is the only entry point that may be called from another task. Publish
+     * what changed somewhere the build can read it, then call this. It is one
+     * release store -- no allocation, no locking, and it cannot block, so a
+     * sensor task at 100Hz can call it on every sample without waiting on the UI.
      *
      *     altitude_.store(v, std::memory_order_relaxed);   // yours to own
      *     FmsApp::instance().requestFrame();               // then this
      *
-     * Order matters: publish first, request second. Requesting a frame does not
-     * queue the value, it only says "read your inputs again", so the UI shows
-     * the latest reading rather than replaying every one of them -- which is
-     * what you want from a stream of sensor, CAN or network updates.
+     * This is a single-producer example. When the frame loop acquires this
+     * producer's request, the release/acquire pair orders the relaxed altitude
+     * store before the build. With multiple producers, the coalesced request
+     * flag is not a publication barrier for every producer: synchronize each
+     * shared payload independently with an atomic, lock, queue, or immutable
+     * handoff. requestFrame() only schedules and coalesces the rebuild.
+     *
+     * Order still matters: publish first, request second. Requesting a frame
+     * does not queue the value, it only says "read your inputs again", so the UI
+     * shows the latest reading rather than replaying every one of them -- which
+     * is what you want from a stream of sensor, CAN or network updates.
      *
      * What you must NOT do is reach into a State from another task. setState()
      * runs your mutation immediately, on the calling task, racing the build. */

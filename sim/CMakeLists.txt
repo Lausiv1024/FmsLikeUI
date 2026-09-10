@@ -84,3 +84,22 @@ if(FMSUI_SANITIZE)
   target_link_options(fmsui_interaction_test PRIVATE -fsanitize=address,undefined)
 endif()
 add_test(NAME fmsui_interaction_test COMMAND fmsui_interaction_test)
+
+# requestFrame() under many requests and several producer threads, through the
+# real FmsApp frame loop.
+#
+# Separate again, because this is the one that can hang: its threads meet at
+# condition variables, and a request path that ever waited on the build would
+# leave them waiting forever.  The timeout is what turns that into a failure --
+# the tests finish in seconds, so a minute is a stuck run, not a slow one.
+find_package(Threads REQUIRED)
+add_executable(fmsui_request_frame_test ${REPO_ROOT}/tests/fmsui_request_frame_test.cpp)
+target_link_libraries(fmsui_request_frame_test PRIVATE fmsui lvgl Threads::Threads)
+target_compile_options(fmsui_request_frame_test PRIVATE -Wall -Wextra)
+if(FMSUI_SANITIZE)
+  target_compile_options(fmsui_request_frame_test PRIVATE
+    -fsanitize=address,undefined -fno-omit-frame-pointer)
+  target_link_options(fmsui_request_frame_test PRIVATE -fsanitize=address,undefined)
+endif()
+add_test(NAME fmsui_request_frame_test COMMAND fmsui_request_frame_test)
+set_tests_properties(fmsui_request_frame_test PROPERTIES TIMEOUT 60)

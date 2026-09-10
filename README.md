@@ -65,19 +65,23 @@ cmake --build build-sim
 ```bash
 cmake -S sim -B build-asan -G Ninja -DFMSUI_SANITIZE=ON -DCMAKE_BUILD_TYPE=Debug
 cmake --build build-asan
-ctest --test-dir build-asan --output-on-failure   # 両方を ASan/UBSan 下で実行
+ctest --test-dir build-asan --output-on-failure   # 3 つすべてを ASan/UBSan 下で実行
 ```
 
-実行ファイルは 2 つに分かれています。
+実行ファイルは 3 つに分かれています。
 
 | 実行ファイル | 見ているもの |
 |---|---|
 | `fmsui_test` | レイアウト計算、差分検出、統計とスタイルキャッシュ。表示も入力も持たない |
 | `fmsui_interaction_test` | LVGL のポインタ入力から始まる操作の連鎖。専用の display と indev を持つ |
+| `fmsui_request_frame_test` | `requestFrame()` の高頻度・並行負荷。複数の producer スレッドと実際のフレームループ |
 
 分けてあるのは、LVGL の display / input device / `FmsApp` singleton の状態を
 レイアウトのテストから隔離するためです。失敗したときに「計算が壊れた」のか
 「入力の連鎖が壊れた」のかが、どちらが赤くなったかで分かります。
+
+負荷試験はスレッド同士を condition variable で待ち合わせるので、壊れると失敗ではなく**停止**します。
+CTest の timeout (60 秒) でそれを失敗に変え、他の 2 つを巻き込まないように独立させてあります。
 
 ### 実機(M5Stack Tab5)
 

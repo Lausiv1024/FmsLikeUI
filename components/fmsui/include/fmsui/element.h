@@ -59,9 +59,11 @@ public:
     /* Ask for a rebuild. Callable from any task: one release store, no
      * allocation, no locking, nothing that can block.
      *
-     * Call it *after* publishing whatever changed. The release here pairs with
-     * the acquire in takeNeedsBuild(), which is what makes those writes visible
-     * to the build that follows. */
+     * Call it *after* publishing whatever changed. If takeNeedsBuild() observes
+     * this store, its acquire makes the preceding writes visible to that build.
+     * The flag is coalesced, though: one acquire does not synchronize with every
+     * producer whose store wrote true. Multiple producers must therefore give
+     * each shared payload its own synchronization (atomic, lock, queue, etc.). */
     void scheduleBuild() { needs_build_.store(true, std::memory_order_release); }
 
     /* Claim the request, if there is one. A store that lands after this returns

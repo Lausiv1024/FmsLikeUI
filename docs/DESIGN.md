@@ -229,7 +229,7 @@ index をそのまま保てる。1 行だけ項目の多い行を混ぜれば、
 **`setState()` はフレームループのスレッドからしか呼べません。** 他タスクからは:
 
 ```cpp
-// 受信タスク
+// 単一の受信タスク
 altitude_.store(v, std::memory_order_relaxed);   // 置き場はアプリが持つ
 FmsApp::instance().requestFrame();               // そのあとで、これ
 ```
@@ -284,7 +284,13 @@ FmsApp::instance().setThreadId(thread_id);       // 最初のフレームより�
 
 `BuildOwner::needs_build_` は `std::atomic<bool>` で、`scheduleBuild()` は release ストア 1 回です。
 **確保も、ロックも、ブロックもしません。** 100Hz のセンサが毎サンプル呼んでも、UI を待つことは
-ありません。release/acquire の対で、要求の前に書いた値が、そのあとのビルドから見えます。
+ありません。上の単一 producer の例では、UI の `takeNeedsBuild()` がその要求を acquire したとき、
+release/acquire の対によって、要求前の `altitude_` への書き込みがその後のビルドから見えます。
+
+ただし、複数 producer が同じ要求フラグへ `true` を書いた場合、UI の 1 回の acquire がすべての
+producer の release と同期するわけではありません。要求フラグはデータ配送路ではなく、あくまで
+ビルドのスケジュールと集約のためのものです。複数 producer が公開する各データは、それ自体を atomic
+にするか、ロック、キュー、不変オブジェクトの受け渡しなどで個別に同期してください。
 
 **値をキューに積まない**のが要点です。要求は「入力を読み直せ」としか言わないので、UI は
 最新値を 1 つ描きます。100 個の古い更新を順に再生するのは、ストリーミングデータに対して
@@ -292,6 +298,13 @@ FmsApp::instance().setThreadId(thread_id);       // 最初のフレームより�
 
 フレーム中に届いた要求も失われません。`takeNeedsBuild()` は exchange なので、ビルド中に立った
 フラグは次のフレームが拾います。
+
+この性質は `tests/fmsui_request_frame_test.cpp` が負荷の下で押さえています。対象は、停止中の burst、
+ビルド中の要求、単一 producer と複数 producer の継続更新、停止後の収束です。複数 producer の
+ケースでは公開値も producer ごとの世代も atomic にしており、要求フラグが全 producer のデータを
+公開できることを検査しているわけではありません。**要求回数とビルド回数の一致は検査しません。**
+集約こそが意図した動作だからです。代わりに、ビルド回数が要求回数を超えないこと、読んだ値が
+逆戻りしないこと、最後に公開された値が画面まで届くこと、その後の idle frame でビルドしないことを見ます。
 
 ### ISR から
 
@@ -334,7 +347,7 @@ LVGL 自身の再描画時間(`LV_EVENT_REFR_START` → `REFR_READY`)も同じ�
 
 **非 atomic な状態を他タスクから触る経路**はありません。`FmsApp::post(fn)` のような
 「UI タスクで実行する関数をキューする」仕組みは、必要になってから入れます。いまのところ
-「値を publish して requestFrame」で足ります。
+「同期された値を publish して requestFrame」で足ります。
 
 ## テーマ (M2)
 
