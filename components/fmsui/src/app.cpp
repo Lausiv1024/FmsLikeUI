@@ -58,8 +58,34 @@ void FmsApp::init(lv_display_t *display, WidgetBuilder builder) {
 
     /* Run ahead of LVGL's own refresh timer.  It early-outs when nothing is
      * dirty, so a static screen costs one predicate per tick. */
-    lv_timer_t *t = lv_timer_create(timerCb, 10, this);
-    lv_timer_set_repeat_count(t, -1);
+    timer_ = lv_timer_create(timerCb, 10, this);
+    lv_timer_set_repeat_count(timer_, -1);
+}
+
+FrameStats FmsApp::stats() const {
+    const std::lock_guard<std::mutex> lock(stats_mutex_);
+    return stats_;
+}
+
+void FmsApp::shutdown() {
+    if (timer_ != nullptr) {
+        lv_timer_delete(timer_);
+        timer_ = nullptr;
+    }
+
+    /* The element tree owns the render objects, and a RenderLv owns its lv_obj.
+     * So this is what takes the users of the shared styles off the screen, and
+     * it has to finish before the styles they point at go away. */
+    if (root_ != nullptr) {
+        root_->unmount();
+        delete root_;
+        root_ = nullptr;
+    }
+    releaseStyleCache();
+
+    builder_ = nullptr;
+    display_ = nullptr;
+    lv_root_ = nullptr;
 }
 
 void FmsApp::setBackground(Color c) {
@@ -119,17 +145,23 @@ void FmsApp::frame() {
 
     const uint32_t t_painted = now();
 
-    stats_.builds++;
-    stats_.widgets = static_cast<uint32_t>(arenas_.current().objectCount());
-    stats_.lv_objects = static_cast<uint32_t>(ctx.next_index);
-    stats_.lv_created = ctx.created;
-    stats_.lv_moved = ctx.moved;
-    stats_.lv_retexted = ctx.retexted;
-    stats_.arena_bytes = static_cast<uint32_t>(arenas_.current().highWaterMark());
-    stats_.build_us = t_built - t0;
-    stats_.layout_us = t_laid_out - t_built;
-    stats_.paint_us = t_painted - t_laid_out;
-    stats_.total_us = t_painted - t0;
+    /* 5. Publish. Assembled locally first: a reader must never get a struct that
+     *    is half this frame and half the last one. */
+    FrameStats f;
+    f.builds = ++builds_;
+    f.widgets = static_cast<uint32_t>(arenas_.current().objectCount());
+    f.lv_objects = static_cast<uint32_t>(ctx.next_index);
+    f.lv_created = ctx.created;
+    f.lv_moved = ctx.moved;
+    f.lv_retexted = ctx.retexted;
+    f.arena_bytes = static_cast<uint32_t>(arenas_.current().highWaterMark());
+    f.build_us = t_built - t0;
+    f.layout_us = t_laid_out - t_built;
+    f.paint_us = t_painted - t_laid_out;
+    f.total_us = t_painted - t0;
+
+    const std::lock_guard<std::mutex> lock(stats_mutex_);
+    stats_ = f;
 }
 
 void runApp(WidgetBuilder builder) {

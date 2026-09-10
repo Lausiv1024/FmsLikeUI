@@ -10,6 +10,7 @@ set(FMSUI_SRCS
     src/theme.cpp
     src/fms.cpp
     src/app.cpp
+    src/refresh.cpp
 )
 
 if(ESP_PLATFORM)

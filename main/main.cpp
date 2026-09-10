@@ -48,23 +48,9 @@ constexpr char kRotationMode[] = "PPA (hardware)";
 constexpr char kRotationMode[] = "software";
 #endif
 
-struct Stats {
-    volatile uint32_t refreshes;
-    volatile uint64_t refresh_us_total;
-    volatile uint32_t refresh_us_max;
-    int64_t refresh_started_us;
-};
-
-Stats g_stats{};
-
-void on_refr_start(lv_event_t *) { g_stats.refresh_started_us = esp_timer_get_time(); }
-
-void on_refr_ready(lv_event_t *) {
-    const uint32_t us = static_cast<uint32_t>(esp_timer_get_time() - g_stats.refresh_started_us);
-    g_stats.refreshes++;
-    g_stats.refresh_us_total += us;
-    if (us > g_stats.refresh_us_max) g_stats.refresh_us_max = us;
-}
+/* LVGL's redraw is timed on the port's own task and read from this one, so the
+ * counters live behind take() rather than in loose volatiles here. */
+fmsui::RefreshStats g_refresh;
 
 uint32_t micros() { return static_cast<uint32_t>(esp_timer_get_time()); }
 
@@ -105,8 +91,7 @@ extern "C" void app_main(void) {
 
     bsp_display_rotate(disp, LV_DISPLAY_ROTATION_90);
 
-    lv_display_add_event_cb(disp, on_refr_start, LV_EVENT_REFR_START, nullptr);
-    lv_display_add_event_cb(disp, on_refr_ready, LV_EVENT_REFR_READY, nullptr);
+    g_refresh.attach(disp, micros);
 
 #if defined(FMSUI_DEMO_M0)
     m0_probe_build("M5 Tab5 / ESP32-P4");
@@ -137,29 +122,23 @@ extern "C" void app_main(void) {
              BSP_LCD_H_RES, BSP_LCD_V_RES);
     log_memory();
 
-    uint32_t last_refreshes = 0;
-    uint64_t last_us_total = 0;
-
     while (true) {
         vTaskDelay(pdMS_TO_TICKS(1000));
 
-        const uint32_t refreshes = g_stats.refreshes;
-        const uint64_t us_total = g_stats.refresh_us_total;
-        const uint32_t frames = refreshes - last_refreshes;
-        const uint64_t us = us_total - last_us_total;
-        last_refreshes = refreshes;
-        last_us_total = us_total;
-
-        /* The screen is static until you touch it, so LVGL only refreshes when
-         * something is dirty.  Drag a finger across it: that is when these
-         * numbers mean anything.  `avg` spans "refresh started" to "flushed". */
-        ESP_LOGI(kTag, "%2" PRIu32 " refr/s | avg %6.2f ms | max %6.2f ms | rotation: %s", frames,
-                 frames > 0 ? static_cast<double>(us) / frames / 1000.0 : 0.0,
-                 g_stats.refresh_us_max / 1000.0, kRotationMode);
-        g_stats.refresh_us_max = 0;
+        /* One call, one second's worth: the count, the total and the worst come
+         * out together, so `avg` cannot be this second's microseconds over the
+         * next second's count. The screen is static until you touch it, so LVGL
+         * only refreshes when something is dirty -- drag a finger across it, and
+         * that is when these numbers mean anything. `avg` spans "refresh
+         * started" to "flushed". */
+        const fmsui::RefreshSnapshot r = g_refresh.take();
+        ESP_LOGI(kTag, "%2" PRIu32 " refr/s | avg %6.2f ms | max %6.2f ms | rotation: %s",
+                 r.refreshes,
+                 r.refreshes > 0 ? static_cast<double>(r.busy_us) / r.refreshes / 1000.0 : 0.0,
+                 r.max_us / 1000.0, kRotationMode);
 
 #if !defined(FMSUI_DEMO_M0)
-        const fmsui::FrameStats &f = fmsui::FmsApp::instance().stats();
+        const fmsui::FrameStats f = fmsui::FmsApp::instance().stats();
         ESP_LOGI(kTag,
                  "   fmsui: %" PRIu32 " builds | %" PRIu32 " widgets | %" PRIu32 " lv_objs (+%" PRIu32
                  " new, %" PRIu32 " moved, %" PRIu32 " retext) | arena %" PRIu32 " B",
@@ -169,6 +148,14 @@ extern "C" void app_main(void) {
                  "   fmsui: total %5" PRIu32 " us = build %5" PRIu32 " + layout %5" PRIu32
                  " + paint %5" PRIu32,
                  f.total_us, f.build_us, f.layout_us, f.paint_us);
+
+        /* The style cache never evicts, so these are also its high-water marks.
+         * They should stop moving once every look on the page has been seen; if
+         * they keep climbing, something is generating a fresh colour or radius
+         * per frame and the cache is the wrong shape for it. */
+        const fmsui::StyleCacheStats sc = fmsui::styleCacheStats();
+        ESP_LOGI(kTag, "   fmsui: styles %" PRIu32 " text + %" PRIu32 " box", sc.text_styles,
+                 sc.box_styles);
 #endif
     }
 }

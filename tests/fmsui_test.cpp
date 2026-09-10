@@ -1107,6 +1107,226 @@ void test_stepping_a_window_is_all_text_and_no_structure() {
     delete el;
 }
 
+/* ---- Shared styles ----------------------------------------------------- */
+
+void test_repeating_a_style_set_does_not_grow_the_cache() {
+    std::printf("styles: the same set of looks, repeated, is cached once each\n");
+
+    lv_display_t *disp = headlessDisplay();
+    lv_obj_t *screen = lv_display_get_screen_active(disp);
+
+    /* The tests above painted too, and their objects are gone, so this is a
+     * clean session to count within. */
+    releaseStyleCache();
+
+    BuildArenas arenas;
+    BuildOwner owner;
+
+    /* Two text looks and one box look, with only the strings varying -- the
+     * shape of every real screen: many objects, few looks. */
+    const auto build = [](int tick, bool extra_look) {
+        return new TestRoot(new Column{{.children = {
+            new Text{{.text = fmt("%d", tick), .color = Color::rgb(0x00FF00)}},
+            new Text{{.text = fmt("%d", tick * 2),
+                      .color = Color::rgb(extra_look ? 0xFFAA00 : 0x00FF00)}},
+            new Text{{.text = "FIXED", .color = Color::rgb(0xFF00FF)}},
+            new Container{{.color = Color::rgb(0x202020),
+                           .child = new Text{{.text = "BOXED", .color = Color::rgb(0x00FF00)}}}},
+        }}});
+    };
+
+    const auto paint = [&](Element *e) {
+        auto *view = static_cast<RenderView *>(e->renderObject());
+        view->screen = Size{320, 240};
+        view->layout(BoxConstraints::tight(view->screen));
+
+        PaintContext ctx;
+        ctx.root = screen;
+        view->paint(ctx, Offset{0, 0});
+    };
+
+    arenas.beginBuild();
+    Element *el = build(0, false)->createElement();
+    el->mount(nullptr, &owner);
+    paint(el);
+
+    const StyleCacheStats first = styleCacheStats();
+    CHECK(first.text_styles == 2);  // green and magenta
+    CHECK(first.box_styles == 1);
+
+    /* Twenty more frames of changing text. Nothing about the *looks* changed, so
+     * nothing should be added -- this is the claim the cache rests on, and the
+     * reason it can be allowed to never evict. */
+    for (int i = 1; i <= 20; i++) {
+        arenas.beginBuild();
+        el->update(build(i, false));
+        paint(el);
+    }
+
+    const StyleCacheStats after = styleCacheStats();
+    CHECK(after.text_styles == first.text_styles);
+    CHECK(after.box_styles == first.box_styles);
+
+    /* And one genuinely new colour does add exactly one, so the numbers above
+     * are a cache that is working rather than a counter that is stuck. */
+    arenas.beginBuild();
+    el->update(build(21, true));
+    paint(el);
+
+    const StyleCacheStats grown = styleCacheStats();
+    CHECK(grown.text_styles == first.text_styles + 1);
+    CHECK(grown.box_styles == first.box_styles);
+
+    el->unmount();
+    delete el;
+}
+
+void test_releasing_the_style_cache_empties_it() {
+    std::printf("styles: releasing the cache ends the session\n");
+
+    releaseStyleCache();
+
+    const StyleCacheStats empty = styleCacheStats();
+    CHECK(empty.text_styles == 0);
+    CHECK(empty.box_styles == 0);
+}
+
+/* ---- Published diagnostics -------------------------------------------- */
+
+std::atomic<uint32_t> g_test_refresh_clock{0};
+
+uint32_t testRefreshClock() { return g_test_refresh_clock.load(std::memory_order_relaxed); }
+
+void test_refresh_stats_take_a_consistent_interval() {
+    std::printf("stats: refresh intervals stay coherent across two threads\n");
+
+    constexpr int32_t kW = 4;
+    constexpr int32_t kH = 4;
+    std::vector<uint8_t> fb(static_cast<size_t>(kW) * kH * 2);
+    lv_display_t *disp = lv_display_create(kW, kH);
+    lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB565);
+    lv_display_set_buffers(disp, fb.data(), nullptr, fb.size(), LV_DISPLAY_RENDER_MODE_DIRECT);
+
+    RefreshStats refresh;
+    refresh.attach(disp, testRefreshClock);
+
+    constexpr uint32_t kRefreshes = 2000;
+    constexpr uint32_t kDurationUs = 7;
+    std::atomic<bool> done{false};
+    std::atomic<bool> inconsistent{false};
+    uint64_t seen_refreshes = 0;
+    uint64_t seen_busy_us = 0;
+
+    std::thread reader([&] {
+        const auto consume = [&](const RefreshSnapshot &s) {
+            if (s.busy_us != static_cast<uint64_t>(s.refreshes) * kDurationUs) {
+                inconsistent.store(true, std::memory_order_relaxed);
+            }
+            if ((s.refreshes == 0 && s.max_us != 0) ||
+                (s.refreshes != 0 && s.max_us != kDurationUs)) {
+                inconsistent.store(true, std::memory_order_relaxed);
+            }
+            seen_refreshes += s.refreshes;
+            seen_busy_us += s.busy_us;
+        };
+
+        while (!done.load(std::memory_order_acquire)) {
+            consume(refresh.take());
+            std::this_thread::yield();
+        }
+        consume(refresh.take());
+    });
+
+    for (uint32_t i = 0; i < kRefreshes; i++) {
+        g_test_refresh_clock.store(i * 100 + 1, std::memory_order_relaxed);
+        lv_display_send_event(disp, LV_EVENT_REFR_START, nullptr);
+        g_test_refresh_clock.store(i * 100 + 1 + kDurationUs, std::memory_order_relaxed);
+        lv_display_send_event(disp, LV_EVENT_REFR_READY, nullptr);
+        if ((i & 31U) == 0) std::this_thread::yield();
+    }
+
+    done.store(true, std::memory_order_release);
+    reader.join();
+
+    CHECK(!inconsistent.load(std::memory_order_relaxed));
+    CHECK(seen_refreshes == kRefreshes);
+    CHECK(seen_busy_us == static_cast<uint64_t>(kRefreshes) * kDurationUs);
+
+    /* The callbacks point at the local RefreshStats, so remove their owner by
+     * deleting the display before the object leaves scope. */
+    lv_display_delete(disp);
+}
+
+std::atomic<uint32_t> g_test_frame_clock{0};
+
+uint32_t testFrameClock() { return g_test_frame_clock.fetch_add(1, std::memory_order_relaxed); }
+
+void test_frame_and_style_stats_are_safe_to_read_during_frames() {
+    std::printf("stats: frame and style snapshots stay coherent while painting\n");
+
+    releaseStyleCache();
+    lv_display_t *disp = headlessDisplay();
+    FmsApp &app = FmsApp::instance();
+    std::atomic<uint32_t> style_index{0};
+    g_test_frame_clock.store(0, std::memory_order_relaxed);
+    app.setClock(testFrameClock);
+    app.init(disp, [&] {
+        const uint32_t i = style_index.load(std::memory_order_relaxed);
+        const uint32_t shade = i & 0xFFU;
+        return new Text{{.text = fmt("%u", i),
+                         .color = Color::rgb((shade << 16) | (shade << 8) | shade)}};
+    });
+
+    constexpr uint32_t kLooks = 32;
+    constexpr uint32_t kFrames = 512;
+    std::atomic<bool> done{false};
+    std::atomic<bool> inconsistent{false};
+    std::atomic<uint32_t> reads{0};
+
+    std::thread reader([&] {
+        uint32_t last_builds = 0;
+        uint32_t last_text_styles = 0;
+        while (!done.load(std::memory_order_acquire)) {
+            const FrameStats f = app.stats();
+            const StyleCacheStats s = styleCacheStats();
+            if (f.builds != 0 && f.total_us != f.build_us + f.layout_us + f.paint_us) {
+                inconsistent.store(true, std::memory_order_relaxed);
+            }
+            if (f.builds < last_builds || s.text_styles < last_text_styles ||
+                s.text_styles > kLooks || s.box_styles != 0) {
+                inconsistent.store(true, std::memory_order_relaxed);
+            }
+            last_builds = f.builds;
+            last_text_styles = s.text_styles;
+            reads.fetch_add(1, std::memory_order_relaxed);
+            std::this_thread::yield();
+        }
+    });
+
+    for (uint32_t i = 0; i < kFrames; i++) {
+        style_index.store(i % kLooks, std::memory_order_relaxed);
+        app.requestFrame();
+        lv_tick_inc(10);
+        lv_timer_handler();
+        std::this_thread::yield();
+    }
+
+    done.store(true, std::memory_order_release);
+    reader.join();
+
+    const FrameStats final_frame = app.stats();
+    const StyleCacheStats final_styles = styleCacheStats();
+    CHECK(reads.load(std::memory_order_relaxed) > 0);
+    CHECK(!inconsistent.load(std::memory_order_relaxed));
+    CHECK(final_frame.builds >= kFrames);
+    CHECK(final_styles.text_styles == kLooks);
+    CHECK(final_styles.box_styles == 0);
+
+    app.shutdown();
+    CHECK(styleCacheStats().text_styles == 0);
+    CHECK(styleCacheStats().box_styles == 0);
+}
+
 /* ---- Cross-thread ------------------------------------------------------ */
 
 void test_request_from_another_thread_is_seen() {
@@ -1267,12 +1487,23 @@ int main() {
     test_paint_counts_the_text_it_rewrites();
     test_stepping_a_window_is_all_text_and_no_structure();
 
+    test_repeating_a_style_set_does_not_grow_the_cache();
+    test_releasing_the_style_cache_empties_it();
+
+    test_refresh_stats_take_a_consistent_interval();
+    test_frame_and_style_stats_are_safe_to_read_during_frames();
+
     test_request_from_another_thread_is_seen();
     test_a_request_during_a_build_is_not_lost();
     test_without_a_thread_id_the_check_is_off();
     test_the_frame_thread_is_recorded();
     test_the_isr_requester_sets_the_same_flag();
     test_arena_resets_between_builds();
+
+    /* Every element built above has been unmounted and deleted, so the objects
+     * that held these styles are gone and it is safe -- and, for a sanitizer
+     * run, necessary -- to hand them back. */
+    releaseStyleCache();
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

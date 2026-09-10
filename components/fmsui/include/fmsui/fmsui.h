@@ -7,6 +7,7 @@
 #include "fmsui/element.h"
 #include "fmsui/fms.h"
 #include "fmsui/foundation.h"
+#include "fmsui/refresh.h"
 #include "fmsui/render.h"
 #include "fmsui/str.h"
 #include "fmsui/theme.h"

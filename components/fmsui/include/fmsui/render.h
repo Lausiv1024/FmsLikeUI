@@ -66,6 +66,31 @@ public:
     uint32_t retexted = 0;
 };
 
+/* ---- Shared styles ----------------------------------------------------- */
+
+/* How many distinct looks the screens actually asked for.
+ *
+ * Nothing is ever evicted, so each count is also the high-water mark for the
+ * session -- which is the number the catalog screen exists to measure. Run it,
+ * read these, and you know whether a design's set of looks is the small finite
+ * thing the cache assumes it is. */
+struct StyleCacheStats {
+    uint32_t text_styles = 0;
+    uint32_t box_styles = 0;
+};
+
+/* A consistent copy. Safe to read from a diagnostics task while the UI task is
+ * discovering a new style. */
+StyleCacheStats styleCacheStats();
+
+/* End the style cache's session: reset every shared lv_style_t and drop it.
+ *
+ * Every lv_obj that was given one must be gone first -- LVGL objects hold a bare
+ * pointer to the style, not a copy. FmsApp::shutdown() does this in the right
+ * order and is the way in for anything that owns an app; call this directly only
+ * from code that built and destroyed its own render tree, as the tests do. */
+void releaseStyleCache();
+
 enum class FlexFit : uint8_t { Tight, Loose };
 
 class RenderObject {

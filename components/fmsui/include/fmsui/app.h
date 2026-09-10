@@ -16,6 +16,7 @@
 #include <atomic>
 #include <cstddef>
 #include <functional>
+#include <mutex>
 
 #include "lvgl.h"
 
@@ -27,6 +28,18 @@ namespace fmsui {
 
 using WidgetBuilder = std::function<Widget *()>;
 
+/* One frame's numbers, and only ever one frame's.
+ *
+ * This is handed out by value, not by reference, because the frame loop and
+ * whoever logs it are different tasks. A reference would let a reader walk the
+ * fields while the loop is part-way through writing the next frame into them,
+ * and come away with a build time from one frame and a paint time from another
+ * -- a reading that looks plausible and describes no frame that ever ran.
+ *
+ * Making each field a separate atomic would not fix that. Every individual read
+ * would be safe and the set would still be a mixture. What has to be atomic is
+ * the whole struct, so the loop assembles a frame locally and publishes it in
+ * one go, and stats() copies it out the same way. */
 struct FrameStats {
     uint32_t builds = 0;       /* rebuild passes since start */
     uint32_t widgets = 0;      /* widgets created in the last pass */
@@ -118,7 +131,19 @@ public:
     FrameRequester requester() { return FrameRequester(owner_.dirtyFlag()); }
 
     Size screenSize() const { return screen_; }
-    const FrameStats &stats() const { return stats_; }
+
+    /* The last completed frame, as a consistent copy. Safe to call from any
+     * task; see FrameStats for why it is a copy. */
+    FrameStats stats() const;
+
+    /* Tear the app down: stop the frame timer, destroy the element tree -- which
+     * destroys every lv_obj it made -- and only then release the shared styles,
+     * which those objects were pointing at.
+     *
+     * The device never calls this; the app is the process. The simulator and the
+     * tests do, so that a run ends with nothing outstanding and LeakSanitizer
+     * has nothing of ours to report. Safe on an app that was never init()ed. */
+    void shutdown();
 
     void setBackground(Color c);
 
@@ -146,9 +171,18 @@ private:
     Element *root_ = nullptr;
     lv_obj_t *lv_root_ = nullptr;
     lv_display_t *display_ = nullptr;
+    lv_timer_t *timer_ = nullptr;
     Size screen_{};
-    FrameStats stats_{};
     MicrosClock clock_ = nullptr;
+
+    /* The running build count belongs to the frame loop alone -- it is not
+     * incremented under the lock, only copied into the frame that carries it. */
+    uint32_t builds_ = 0;
+
+    /* Guards nothing but the copy below. No build, layout, paint or logging
+     * happens inside it. */
+    mutable std::mutex stats_mutex_;
+    FrameStats stats_{};
 };
 
 /* Convenience: FmsApp::instance().init(lv_display_get_default(), builder). */

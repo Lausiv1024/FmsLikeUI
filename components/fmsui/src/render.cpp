@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <memory>
+#include <mutex>
 
 namespace fmsui {
 namespace {
@@ -24,21 +26,6 @@ void makeInert(lv_obj_t *o) {
     lv_obj_remove_flag(o, LV_OBJ_FLAG_SCROLLABLE);
 }
 
-/* Shared styles, instead of a local style per object.
- *
- * lv_obj_set_style_x() writes into the object's *local* style, and LVGL grows
- * that style's property array one property at a time -- so six setters on a
- * fresh object is six reallocations, out of a heap that lives in PSRAM. Measured
- * on the device: creating an lv_obj cost 1.85ms.
- *
- * A UI has few distinct looks even when it has many objects: this page has ~150
- * labels but only a handful of (font, colour, alignment) combinations. Building
- * each combination once and sharing it turns those reallocations into a single
- * lv_obj_add_style().
- *
- * The cache is never emptied. It is bounded by the number of distinct looks,
- * which is a property of the design, not of the data.
- */
 lv_text_align_t toLvAlign(TextAlign a) {
     switch (a) {
         case TextAlign::Center:
@@ -51,49 +38,112 @@ lv_text_align_t toLvAlign(TextAlign a) {
     return LV_TEXT_ALIGN_LEFT;
 }
 
-struct TextStyle {
-    const lv_font_t *font;
-    Color color;
-    TextAlign align;
-    lv_style_t style;
+/* Shared styles, instead of a local style per object.
+ *
+ * lv_obj_set_style_x() writes into the object's *local* style, and LVGL grows
+ * that style's property array one property at a time -- so six setters on a
+ * fresh object is six reallocations, out of a heap that lives in PSRAM. Measured
+ * on the device: creating an lv_obj cost 1.85ms.
+ *
+ * A UI has few distinct looks even when it has many objects: this page has ~150
+ * labels but only a handful of (font, colour, alignment) combinations. Building
+ * each combination once and sharing it turns those reallocations into a single
+ * lv_obj_add_style().
+ *
+ * Entries are never evicted, and the addresses never move. An lv_obj holds a
+ * bare pointer to the lv_style_t it was given, so dropping one under an LRU
+ * would leave live objects reading freed memory -- and there is nothing to
+ * evict for: colours, fonts, alignments, borders and radii come from a theme and
+ * a screen design, so the set is finite and the count settles. Generating a
+ * fresh colour or radius per frame, or animating a style continuously, is
+ * outside what this assumes.
+ *
+ * What bounds it is therefore the design, and the way to find that bound is to
+ * measure it -- styleCacheStats() on the catalog screen -- rather than to pick a
+ * cap up front and truncate at it. The cache lives as long as the LVGL session;
+ * releaseStyleCache() ends it, once every object that used one is gone.
+ */
+class StyleCache {
+public:
+    ~StyleCache() { clear(); }
+
+    const lv_style_t *text(const lv_font_t *font, Color color, TextAlign align) {
+        for (const auto &e : text_) {
+            if (e->font == font && e->color == color && e->align == align) return &e->style;
+        }
+        auto e = std::make_unique<TextEntry>(TextEntry{font, color, align, {}});
+        lv_style_init(&e->style);
+        lv_style_set_text_font(&e->style, font);
+        lv_style_set_text_color(&e->style, toLv(color));
+        lv_style_set_text_opa(&e->style, color.a);
+        lv_style_set_text_align(&e->style, toLvAlign(align));
+        text_.push_back(std::move(e));
+        publishStats();
+        return &text_.back()->style;
+    }
+
+    const lv_style_t *box(const BoxDecoration &d) {
+        for (const auto &e : box_) {
+            if (e->deco == d) return &e->style;
+        }
+        auto e = std::make_unique<BoxEntry>(BoxEntry{d, {}});
+        lv_style_init(&e->style);
+        lv_style_set_bg_color(&e->style, toLv(d.color));
+        lv_style_set_bg_opa(&e->style, d.color.a);
+        lv_style_set_border_color(&e->style, toLv(d.border_color));
+        lv_style_set_border_opa(&e->style, d.border_color.a);
+        lv_style_set_border_width(&e->style, px(d.border_width));
+        lv_style_set_radius(&e->style, px(d.radius));
+        box_.push_back(std::move(e));
+        publishStats();
+        return &box_.back()->style;
+    }
+
+    StyleCacheStats stats() const {
+        const std::lock_guard<std::mutex> lock(stats_mutex_);
+        return published_stats_;
+    }
+
+    void clear() {
+        for (const auto &e : text_) lv_style_reset(&e->style);
+        for (const auto &e : box_) lv_style_reset(&e->style);
+        text_.clear();
+        box_.clear();
+        publishStats();
+    }
+
+private:
+    /* Rendering owns the vectors and is single-task. Diagnostics are read from
+     * another task on the device, so they get a separately published snapshot
+     * instead of touching vector::size() while a push_back may be in flight. */
+    void publishStats() {
+        const StyleCacheStats next{static_cast<uint32_t>(text_.size()),
+                                   static_cast<uint32_t>(box_.size())};
+        const std::lock_guard<std::mutex> lock(stats_mutex_);
+        published_stats_ = next;
+    }
+
+    /* One heap block per entry, so &style stays put as the vectors grow. */
+    struct TextEntry {
+        const lv_font_t *font;
+        Color color;
+        TextAlign align;
+        lv_style_t style;
+    };
+    struct BoxEntry {
+        BoxDecoration deco;
+        lv_style_t style;
+    };
+
+    std::vector<std::unique_ptr<TextEntry>> text_;
+    std::vector<std::unique_ptr<BoxEntry>> box_;
+    mutable std::mutex stats_mutex_;
+    StyleCacheStats published_stats_{};
 };
 
-struct BoxStyle {
-    BoxDecoration deco;
-    lv_style_t style;
-};
-
-std::vector<TextStyle *> g_text_styles;
-std::vector<BoxStyle *> g_box_styles;
-
-const lv_style_t *textStyle(const lv_font_t *font, Color color, TextAlign align) {
-    for (TextStyle *s : g_text_styles) {
-        if (s->font == font && s->color == color && s->align == align) return &s->style;
-    }
-    auto *s = new TextStyle{font, color, align, {}};
-    lv_style_init(&s->style);
-    lv_style_set_text_font(&s->style, font);
-    lv_style_set_text_color(&s->style, toLv(color));
-    lv_style_set_text_opa(&s->style, color.a);
-    lv_style_set_text_align(&s->style, toLvAlign(align));
-    g_text_styles.push_back(s);
-    return &s->style;
-}
-
-const lv_style_t *boxStyle(const BoxDecoration &d) {
-    for (BoxStyle *s : g_box_styles) {
-        if (s->deco == d) return &s->style;
-    }
-    auto *s = new BoxStyle{d, {}};
-    lv_style_init(&s->style);
-    lv_style_set_bg_color(&s->style, toLv(d.color));
-    lv_style_set_bg_opa(&s->style, d.color.a);
-    lv_style_set_border_color(&s->style, toLv(d.border_color));
-    lv_style_set_border_opa(&s->style, d.border_color.a);
-    lv_style_set_border_width(&s->style, px(d.border_width));
-    lv_style_set_radius(&s->style, px(d.radius));
-    g_box_styles.push_back(s);
-    return &s->style;
+StyleCache &styleCache() {
+    static StyleCache cache;
+    return cache;
 }
 
 /* Clamp `a` so it can be satisfied within `c`. */
@@ -109,6 +159,10 @@ BoxConstraints enforce(BoxConstraints a, BoxConstraints c) {
 }
 
 }  // namespace
+
+StyleCacheStats styleCacheStats() { return styleCache().stats(); }
+
+void releaseStyleCache() { styleCache().clear(); }
 
 /* ---- RenderObject ------------------------------------------------------ */
 
@@ -202,7 +256,8 @@ lv_obj_t *RenderText::createLv(lv_obj_t *parent) {
 }
 
 void RenderText::syncLv(PaintContext &ctx, lv_obj_t *obj) {
-    const lv_style_t *want = textStyle(font != nullptr ? font : LV_FONT_DEFAULT, color, align);
+    const lv_style_t *want =
+        styleCache().text(font != nullptr ? font : LV_FONT_DEFAULT, color, align);
     if (applied_style_ != want) {
         if (applied_style_ != nullptr) {
             lv_obj_remove_style(obj, const_cast<lv_style_t *>(applied_style_), LV_PART_MAIN);
@@ -242,7 +297,7 @@ lv_obj_t *RenderDecoratedBox::createLv(lv_obj_t *parent) {
 }
 
 void RenderDecoratedBox::syncLv(PaintContext &ctx, lv_obj_t *obj) {
-    const lv_style_t *want = boxStyle(decoration);
+    const lv_style_t *want = styleCache().box(decoration);
     if (applied_style_ == want) return;
 
     if (applied_style_ != nullptr) {

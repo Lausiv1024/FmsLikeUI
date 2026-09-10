@@ -65,8 +65,19 @@ cmake --build build-sim
 ```bash
 cmake -S sim -B build-asan -G Ninja -DFMSUI_SANITIZE=ON -DCMAKE_BUILD_TYPE=Debug
 cmake --build build-asan
-./build-asan/fmsui_test        # レイアウト計算と差分検出。ASan/UBSan 下で実行
+ctest --test-dir build-asan --output-on-failure   # 両方を ASan/UBSan 下で実行
 ```
+
+実行ファイルは 2 つに分かれています。
+
+| 実行ファイル | 見ているもの |
+|---|---|
+| `fmsui_test` | レイアウト計算、差分検出、統計とスタイルキャッシュ。表示も入力も持たない |
+| `fmsui_interaction_test` | LVGL のポインタ入力から始まる操作の連鎖。専用の display と indev を持つ |
+
+分けてあるのは、LVGL の display / input device / `FmsApp` singleton の状態を
+レイアウトのテストから隔離するためです。失敗したときに「計算が壊れた」のか
+「入力の連鎖が壊れた」のかが、どちらが赤くなったかで分かります。
 
 ### 実機(M5Stack Tab5)
 
@@ -128,7 +139,7 @@ MSBuild になる・`$ENV{IDF_PATH}` 次第で別の ESP-IDF が読まれる、�
 | `components/fmsui_fonts/` | B612 Mono のビットマップフォント(生成物)|
 | `assets/fonts/` | 元の TTF |
 | `third_party/lvgl` | LVGL v9.5.0(submodule)。`third_party/lv_conf.h` を実機とシムで共有 |
-| `tests/` | レイアウトと差分検出のユニットテスト |
+| `tests/` | ホストのユニットテスト。レイアウトと差分検出、およびヘッドレスの操作テスト |
 | `tools/gen_lv_conf.py` | `lv_conf.h` を LVGL のテンプレートから生成 |
 | `tools/gen_fonts.py` | TTF を LVGL のビットマップフォントに変換 |
 | `tools/serial_capture.py` | 実機のシリアルログを取る |
@@ -138,6 +149,7 @@ MSBuild になる・`$ENV{IDF_PATH}` 次第で別の ESP-IDF が読まれる、�
 | ドキュメント | 中身 |
 |---|---|
 | [docs/DESIGN.md](docs/DESIGN.md) | 設計と、Flutter とあえて違えた点、踏んだバグ |
+| [docs/DECISIONS.md](docs/DECISIONS.md) | 採用した設計判断と、その実装状況 |
 | [docs/PERF.md](docs/PERF.md) | 実機の実測値と最適化(失敗した実験も) |
 | [docs/M0-NOTES.md](docs/M0-NOTES.md) | ブリングアップで判明した事実(IDF/BSP/COM ポート等) |
 | [docs/PLAN.md](docs/PLAN.md) | 当初の計画 |

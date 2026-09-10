@@ -56,14 +56,17 @@ bool g_print_stats = false;
 
 void printStats(const char *what) {
     if (!g_print_stats) return;
-    const fmsui::FrameStats &s = fmsui::FmsApp::instance().stats();
+    const fmsui::FrameStats s = fmsui::FmsApp::instance().stats();
+    const fmsui::StyleCacheStats c = fmsui::styleCacheStats();
     std::printf("stats %-10s rows=%d widgets=%u lv_objs=%u lv_created=%u lv_moved=%u "
-                "lv_retexted=%u build=%uus layout=%uus paint=%uus total=%uus\n",
+                "lv_retexted=%u build=%uus layout=%uus paint=%uus total=%uus "
+                "styles=%ut+%ub\n",
                 what, g_rows, static_cast<unsigned>(s.widgets),
                 static_cast<unsigned>(s.lv_objects), static_cast<unsigned>(s.lv_created),
                 static_cast<unsigned>(s.lv_moved), static_cast<unsigned>(s.lv_retexted),
                 static_cast<unsigned>(s.build_us), static_cast<unsigned>(s.layout_us),
-                static_cast<unsigned>(s.paint_us), static_cast<unsigned>(s.total_us));
+                static_cast<unsigned>(s.paint_us), static_cast<unsigned>(s.total_us),
+                static_cast<unsigned>(c.text_styles), static_cast<unsigned>(c.box_styles));
 }
 
 /* Scripted touch, so a headless run can prove the whole chain -- hit test,
@@ -183,6 +186,13 @@ int run_headless(Demo demo, const char *out_path, int frames) {
 
     const bool ok = pngw::write_rgb(out_path, rgb, kWidth, kHeight);
     std::free(rgb);
+
+    /* The picture is written, so the screen has done its job. Tearing the app
+     * down here rather than letting the process exit is what makes a sanitizer
+     * run mean something: the element tree goes, its lv_objs go with it, and
+     * only then are the shared styles released -- in that order, and while LVGL
+     * is still up to release them into. */
+    fmsui::FmsApp::instance().shutdown();
     std::free(fb);
 
     if (!ok) {

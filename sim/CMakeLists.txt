@@ -47,6 +47,10 @@ target_link_libraries(fmsui_sim PRIVATE fmsui fmsui_fonts lvgl ${SDL2_LIBRARIES}
 # before they turn into a hard fault on the device.
 option(FMSUI_SANITIZE "Build the simulator with ASan/UBSan" OFF)
 if(FMSUI_SANITIZE)
+  # Instrument the framework itself as well as the executable that calls it.
+  # fmsui is a static library, so it needs compile instrumentation but the
+  # sanitizer runtime is linked by each executable below.
+  target_compile_options(fmsui PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
   target_compile_options(fmsui_sim PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
   target_link_options(fmsui_sim PRIVATE -fsanitize=address,undefined)
 endif()
@@ -63,3 +67,20 @@ if(FMSUI_SANITIZE)
   target_link_options(fmsui_test PRIVATE -fsanitize=address,undefined)
 endif()
 add_test(NAME fmsui_test COMMAND fmsui_test)
+
+# Input, tested headlessly through a real LVGL pointer device.
+#
+# A separate executable from fmsui_test rather than more cases inside it: this
+# one owns an LVGL display, an input device and the FmsApp singleton, and
+# keeping that state out of the layout tests is what makes a failure here read
+# as "the input chain broke" and not as something about layout.  It links the
+# real fonts because the controls it taps are laid out with them.
+add_executable(fmsui_interaction_test ${REPO_ROOT}/tests/fmsui_interaction_test.cpp)
+target_link_libraries(fmsui_interaction_test PRIVATE fmsui fmsui_fonts lvgl)
+target_compile_options(fmsui_interaction_test PRIVATE -Wall -Wextra)
+if(FMSUI_SANITIZE)
+  target_compile_options(fmsui_interaction_test PRIVATE
+    -fsanitize=address,undefined -fno-omit-frame-pointer)
+  target_link_options(fmsui_interaction_test PRIVATE -fsanitize=address,undefined)
+endif()
+add_test(NAME fmsui_interaction_test COMMAND fmsui_interaction_test)
