@@ -3,6 +3,15 @@
 # (build-asan, build-pages, ...) is ignored without editing this file again.
 /build*/
 
+# What tools/ci/ writes when run by hand, and a consumer built in place with
+# idf.py or cmake rather than through tools/ci/consumer_*.sh.
+/ci-out/
+/consumers/*/build*/
+
+# The ESP-IDF consumer has no managed components, so the component manager's
+# lock there records nothing but the ESP-IDF version it ran under.
+/consumers/esp-idf/dependencies.lock
+
 sdkconfig
 sdkconfig.old
 compile_commands.json

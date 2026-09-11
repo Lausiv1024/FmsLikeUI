@@ -2,7 +2,15 @@
 # not do, are in docs/DECISIONS.md ("GitHub Actions による継続的インテグレーション").
 #
 #   host (debug), host (asan-ubsan)   pull requests, pushes to master, manual runs
+#   consumer (host)                   pull requests, pushes to master, manual runs
 #   device-build (esp32p4)            pushes to master and manual runs
+#   consumer (esp-idf, esp32p4)       pushes to master and manual runs
+#
+# The consumer jobs build consumers/ -- projects that use the framework the way
+# an application outside this repository would -- from a copy of the tree
+# without sim/, demo/, tests/, main/ or fmsui_fonts.  They are jobs of their own
+# so that a broken usage contract fails under its own name, not inside a job
+# whose internal tests or demos passed.  See docs/USING.md.
 #
 # Pins: every action is pinned to a full commit SHA, with the release it was
 # taken from next to it, because a tag can be moved and a SHA cannot.  The
@@ -106,6 +114,40 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  consumer-host:
+    name: consumer (host)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Install dependencies
+        # Ninja only.  Not SDL2: an application of the framework does not need it,
+        # and installing it here would hide a consumer that did.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build
+          cmake --version | head -1
+          c++ --version | head -1
+
+      - name: Build and run consumers/host from a tree without sim/, demo/ or tests/
+        run: bash tools/ci/consumer_host.sh ci-out/consumer-host
+
+      - name: Upload failure evidence
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: consumer-host-failure
+          path: |
+            ci-out/consumer-host/build/CMakeCache.txt
+            ci-out/consumer-host/build/Testing/Temporary/LastTest.log
+          retention-days: 7
+          if-no-files-found: ignore
+
   device-build:
     name: device-build (esp32p4)
     # Not on pull requests yet: whether it becomes a required PR check is decided
@@ -140,5 +182,40 @@ jobs:
             ci-out/device/*.lock
             build-ci/sdkconfig
             build-ci/log/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  consumer-idf:
+    name: consumer (esp-idf, esp32p4)
+    # The same triggers as device-build, and for the same reason: whether an
+    # ESP-IDF build becomes a required PR check is decided for both together.
+    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    container:
+      # The image device-build uses, pinned by the same digest.
+      image: espressif/idf:v5.5.4@sha256:b9f2d6ea1c19e0c9f7959bdb74a9e3c775642f9d0f3b841937c5fa3363db892b
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Build consumers/esp-idf from a tree without main/, demo/ or the BSP
+        run: |
+          . "$IDF_PATH/export.sh" >/dev/null
+          bash tools/ci/consumer_idf.sh ci-out/consumer-idf
+
+      - name: Upload failure evidence
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: consumer-idf-failure
+          path: |
+            ci-out/consumer-idf/*.log
+            ci-out/consumer-idf/*.md
+            ci-out/consumer-idf/build/sdkconfig
+            ci-out/consumer-idf/build/log/
           retention-days: 7
           if-no-files-found: ignore

@@ -1,0 +1,3 @@
+/* Generated from consumers/host/header_check.cpp.in: one public header, first
+ * and alone. It has to compile with nothing included before it. */
+#include <fmsui/@FMSUI_HEADER@.h>

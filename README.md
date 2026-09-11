@@ -8,6 +8,8 @@ Flutter と同じ 3 層(Widget → Element → RenderObject)と制約ベース�
 描画・フォント・部分再描画・タッチは LVGL 9 に任せています。フレームワークは ESP-IDF に依存しないので、
 **実機と PC シミュレータで UI コードが 1 行も変わりません**。
 
+別のプロジェクトから使う方法(通常の CMake / ESP-IDF の component)と、その利用契約は [docs/USING.md](docs/USING.md) にあります。
+
 ```cpp
 class PerfPageState : public State<PerfPage> {
   int v1_ = 153;
@@ -87,13 +89,15 @@ CTest の timeout (60 秒) でそれを失敗に変え、他の 2 つを巻き�
 
 ### CI(GitHub Actions)
 
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml) が次の 3 つの job を走らせます。
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) が次の 5 つの job を走らせます。
 
 | job | 起動 | やること |
 |---|---|---|
 | `host (debug)` | pull request、`master` への push、手動 | Debug ビルド、3 件の CTest、6 デモのヘッドレス描画(空でない PNG が出ること) |
 | `host (asan-ubsan)` | 同上 | 同じことを `FMSUI_SANITIZE=ON` で行う。`fmsui` 本体が計装されていることも確かめ、ASan / UBSan / LeakSanitizer の報告を失敗にする |
+| `consumer (host)` | 同上 | `sim/`・`demo/`・`tests/`・`fmsui_fonts` を除いたツリーで `consumers/host` を configure・ビルド・実行する。公開ヘッダーの単独コンパイルも含む([docs/USING.md](docs/USING.md)) |
 | `device-build (esp32p4)` | `master` への push、手動 | ESP-IDF 5.5.4 の公式コンテナで、既定と `FMSUI_DEMO` の 5 構成をビルドする。LVGL Examples / Demos が 0 件であることを判定し、bin サイズと app 領域の空きを job summary に出す |
+| `consumer (esp-idf, esp32p4)` | 同上 | 同じコンテナで、`main/`・`demo/`・BSP・`fmsui_fonts` を除いたツリーから `consumers/esp-idf` をビルドする。ビルドに入った component を検査し、bin サイズを job summary に出す |
 
 警告をエラーにするのはプロジェクトのコード(`components/`、`main/`、`demo/`、`sim/`、`tests/`)だけで、
 LVGL、ESP-IDF、managed component には掛けません。手元でも `-DFMSUI_WERROR=ON` で同じ扱いになります
@@ -169,15 +173,17 @@ MSBuild になる・`$ENV{IDF_PATH}` 次第で別の ESP-IDF が読まれる、�
 | `assets/fonts/` | 元の TTF |
 | `third_party/lvgl` | LVGL v9.5.0(submodule)。`third_party/lv_conf.h` を実機とシムで共有 |
 | `tests/` | ホストのテスト。レイアウトと差分検出、ヘッドレスの操作テスト、`requestFrame()` の並行負荷テスト |
+| `consumers/` | フレームワークを外から使うだけのプロジェクト。通常の CMake (`host/`) と ESP-IDF (`esp-idf/`)。利用契約のテスト用で、デモではない |
 | `tools/gen_lv_conf.py` | `lv_conf.h` を LVGL のテンプレートから生成 |
 | `tools/gen_fonts.py` | TTF を LVGL のビットマップフォントに変換 |
 | `tools/serial_capture.py` | 実機のシリアルログを取る |
-| `tools/ci/` | CI が呼ぶ検査。デモの描画、サニタイザ計装とその報告、実機ビルド 6 構成と LVGL ソースの内訳 |
+| `tools/ci/` | CI が呼ぶ検査。デモの描画、サニタイザ計装とその報告、実機ビルド 6 構成と LVGL ソースの内訳、consumer のビルドとその component の内訳 |
 | `tools/idf.bat` | Windows から ESP-IDF を叩く(実機ビルドの主経路) |
 | `tools/idf.sh` | 同じことを WSL から。interop が生きているときだけ動く |
 
 | ドキュメント | 中身 |
 |---|---|
+| [docs/USING.md](docs/USING.md) | 別のプロジェクトから使う方法と、利用契約(所有範囲、ライフサイクル、スレッド境界) |
 | [docs/DESIGN.md](docs/DESIGN.md) | 設計と、Flutter とあえて違えた点、踏んだバグ |
 | [docs/DECISIONS.md](docs/DECISIONS.md) | 採用した設計判断と、その実装状況 |
 | [docs/PERF.md](docs/PERF.md) | 実機の実測値と最適化(失敗した実験も) |

@@ -813,6 +813,192 @@ bash tools/ci/device_build.sh build-ci ci-out/device
 - README には、CI の節、`tools/ci/` の行、実機節に lock での依存固定と更新手順の段落を追加した。DESIGN.md は変えていない。
 - job summary の文言は英語にした。
 
+## レビュー待ち
+
+### 2026-09-11: 外部利用契約と consumer smoke test
+
+**状態: レビュー待ち (2026-09-11)。実装とローカル検証の結果は末尾の「実装の結果」。完了条件のチェックはレビューで行う。**
+
+現在のCIは、このリポジトリのルートからシミュレータ、テスト、デモ、ESP32-P4向けアプリを
+ビルドする経路を検証している。一方、主成果物はFMSアプリケーションではなくUIフレームワークなので、
+次は別プロジェクトから`components/fmsui`を利用する契約を固定する。デモは引き続きテスト用の
+fixtureであり、この計画でデモアプリ固有の機能は増やさない。
+
+#### 1. 初版で正式に扱う導入方法
+
+初版はソースを組み込む次の2経路だけを正式な対象とする。
+
+- 通常CMakeでは、利用側がLVGLのtargetを用意し、`components/fmsui`を`add_subdirectory()`する。
+- ESP-IDFでは、`fmsui`と、必要な場合だけ`fmsui_fonts`をlocal componentまたはGit submoduleとして
+  `EXTRA_COMPONENT_DIRS`へ追加する。LVGL、display、入力、BSPの初期化は利用側が所有する。
+
+ESP Component Registryへの公開、インストール済みCMake package、バイナリ配布、SemVerの
+互換保証はこの段階では行わない。まずソース組み込みの契約を実際のconsumerで固定してから判断する。
+
+`fmsui`本体の依存は引き続きLVGLだけとし、生成済みB612 Monoを含む`fmsui_fonts`は任意とする。
+利用側が独自の`lv_font_t`を`FmsThemeData`へ渡せる現在の分離を維持する。
+
+#### 2. 公開APIの範囲
+
+初回はヘッダーの移動や大規模な名前変更をせず、利用契約を文書とconsumerのコンパイルで固定する。
+
+- 通常のアプリが使うAPI: `app.h`、`foundation.h`、`widget.h`、`widgets.h`、`theme.h`、`fms.h`、`str.h`
+- 診断または高度な拡張で使うAPI: `refresh.h`、`render.h`
+- フレームワーク内部として扱い、互換性を約束しないAPI: `element.h`、`arena.h`
+
+入口は`<fmsui/fmsui.h>`とする。内部ヘッダーが現時点でumbrella headerや他の公開ヘッダーから
+推移的に見えることと、それを利用契約に含めることは分ける。実際に非公開ディレクトリへ移すかは、
+consumerを作って必要な依存を確認した後の別判断とする。
+
+#### 3. 独立consumerによる検証
+
+デモとは別に、フレームワークの利用者としてだけ振る舞う最小プロジェクトを置く。
+
+**通常CMake consumer**
+
+- リポジトリのルートCMake、`sim/`、`demo/`、既存`tests/`に依存せずconfigureできる。
+- `<fmsui/fmsui.h>`から独自の`StatefulWidget`とWidget treeを定義し、`fmsui::fmsui`へリンクする。
+- headlessなLVGL displayを利用側で用意し、初期化、1回以上のbuild/paint、`requestFrame()`、
+  `shutdown()`までを公開APIだけで実行する。
+- `fmsui_fonts`を使わず、利用側が選んだフォントまたは`LV_FONT_DEFAULT`で成立する経路を含める。
+
+**ESP-IDF consumer**
+
+- ルートの`main/`、`demo/`、M5Stack Tab5 BSPに依存しない最小ESP-IDFプロジェクトとする。
+- `fmsui`をlocal componentとして認識し、同じ最小Widget treeをESP32-P4向けにコンパイル・リンクする。
+- これはcomponentの取り込みとリンク契約の試験であり、display初期化、flash、物理タッチは行わない。
+
+加えて、通常利用向けに分類した各ヘッダーを、それぞれ翻訳単位の最初に単独includeしてコンパイルする。
+別ヘッダーが偶然先にincludeされた場合だけ通る状態をCIで検出する。
+
+#### 4. 利用文書とCI
+
+`docs/USING.md`を追加し、少なくとも次を記録する。
+
+- 通常CMakeとESP-IDF local componentの導入手順
+- 利用側が用意するLVGL、display/input port、フォントの境界
+- `runApp()`、LVGL timer、`requestFrame()`、`shutdown()`のライフサイクル
+- UI thread上の`setState()`と、別taskからのデータ公開・`requestFrame()`の境界
+- 初版で確認したLVGL / ESP-IDFの版と、保証しない配布・実機範囲
+- デモのコピーではない最小Widget treeの例
+
+ホストconsumerは既存ホストCIから独立してconfigure/build/runしたことがログで分かるようにする。
+ESP-IDF consumerはdigest固定済みのdevice-build環境で別build directoryからビルドする。
+consumerの失敗を既存デモや既存アプリの成功で隠さない。
+
+#### 対象外
+
+- ESP Component Registry、GitHub Release、インストール済みCMake packageへの公開
+- SemVerによる長期のソース・ABI互換保証
+- prebuilt library、署名、配布archiveの作成
+- M5Stack Tab5以外のboard port実装と、consumerへのBSP初期化の提供
+- デモアプリへの画面、入力、ドメインロジックの追加
+- 実機flash、物理タッチ、スクリーンショットの見た目比較
+
+#### 実装完了の条件
+
+- [ ] 通常CMakeの独立consumerが、ルートCMakeやデモに依存せずconfigure、build、実行できる。
+- [ ] ESP-IDFの独立consumerが、既存`main/`やBSPに依存せずESP32-P4向けにリンクできる。
+- [ ] consumerが`<fmsui/fmsui.h>`だけから独自のStatefulWidgetとWidget treeを定義できる。
+- [ ] 通常利用向けの各公開ヘッダーが、暗黙のinclude順序に依存せず単独でコンパイルできる。
+- [ ] `fmsui`本体が`fmsui_fonts`へ必須依存せず、consumer側のフォント選択で動く。
+- [ ] 導入、所有範囲、ライフサイクル、thread境界、確認済みバージョンが`docs/USING.md`に記録される。
+- [ ] hostとESP-IDFのconsumer検証がCIに入り、既存の内部テストとは別の失敗として判別できる。
+- [ ] 既存3件のCTest、6デモのheadless描画、6構成のdevice-buildに回帰がない。
+
+#### 計画時に確認して決めたこと
+
+- 初版の正式経路はlocal componentまたはソース組み込みとし、Registry公開は後段にする。
+- 公開範囲はまず文書とconsumerテストで固定し、ヘッダーの物理的な再配置は同時に行わない。
+- `fmsui_fonts`は任意依存のままにし、フレームワーク本体へ統合しない。
+- consumerは製品デモではなく利用契約のテストfixtureとし、デモアプリの機能追加は行わない。
+
+#### 実装の結果
+
+| 判断 | 実装 |
+|---|---|
+| 置き場所 | `consumers/host/`(通常 CMake)、`consumers/esp-idf/`(ESP-IDF)、両者が使う `consumers/shared/consumer_page.{h,cpp}` |
+| 最小 Widget tree | `consumers/shared/` の `ConsumerPage`。独自の `StatefulWidget`(タップ回数を `setState()` で更新)、他タスクが公開する `std::atomic<uint32_t>`、`FmsTheme`、`Column` / `Text` と `FmsLabel` / `FmsButton`。フレームワークは `<fmsui/fmsui.h>` だけから使う |
+| LVGL の用意 | 利用側がリポジトリの `third_party/lvgl` (v9.5.0) と `third_party/lv_conf.h` を取り込む。host は `add_subdirectory()` と `LV_BUILD_CONF_PATH`、ESP-IDF は `EXTRA_COMPONENT_DIRS` に `components/fmsui` と `third_party/lvgl` を個別に並べ、`LV_KCONFIG_IGNORE` を付ける |
+| 依存しないことの保証 | `tools/ci/stage_consumer.sh` が `components/fmsui`、`third_party/lv_conf.h`、`third_party/lvgl`、`consumers/` だけを別ディレクトリへ写し、consumer はそこから configure する。ルートの `CMakeLists.txt`、`sdkconfig.defaults`、`dependencies.lock`、`main/`、`demo/`、`sim/`、`tests/`、`tools/`、`components/fmsui_fonts` はツリーに存在しない |
+| host consumer の実行内容 | `consumers/host/main.cpp`。480x320 の headless display、pointer indev、tick、フォントを利用側で持ち、(1) `runApp()` の初回ビルドと描画、(2) 別スレッドの公開 → `requestFrame()` が次フレームで表示に届き、その後ビルドしない、(3) `FmsButton` のタップが `setState()` を通る、(4) 全ラベルがテーマに渡したフォント、(5) `shutdown()` 後に screen の子が 0、の 11 checks。CTest に `TIMEOUT 60` で登録 |
+| フォント | host は `LV_FONT_DEFAULT` を別アドレスへコピーした `lv_font_t` をテーマに渡し、ラベルのフォントがそのアドレスであることを判定する(フォールバックの `LV_FONT_DEFAULT` と区別するため)。ESP-IDF は `LV_FONT_DEFAULT` をそのまま渡す。どちらも `fmsui_fonts` をビルドに含めない |
+| ヘッダーの単独コンパイル | `consumers/host/CMakeLists.txt` が `header_check.cpp.in` から `app` / `foundation` / `widget` / `widgets` / `theme` / `fms` / `str` と入口の `fmsui` の 8 TU を生成し、OBJECT ライブラリとして `-Wall -Wextra`(CI では `-Werror` も)でコンパイルする |
+| ESP-IDF consumer | `consumers/esp-idf/`。ボードを持たない。`app_main` が LVGL の display をバッファだけで作り、同じページを `runApp()` し、別タスクが公開と `requestFrame()` を行う。`sdkconfig.defaults` はターゲット、LVGL Examples / Demos の無効化、main タスクのスタック 8192 だけ。ビルドのみで、実機では動かしていない |
+| component の検査 | `tools/ci/check_consumer_components.py`。`project_description.json` で `fmsui` と `lvgl` がビルドに入り、`fmsui_fonts`、`m5stack_tab5`、`esp_lvgl_port` が入っていないことを判定し、job summary 用の表を出す |
+| 警告 | host は consumer 自身の target(2 ソース + 8 ヘッダー TU)に `FMSUI_WERROR=ON` で `-Werror`。`fmsui` のソースは既存 host job が同じコンパイラで `-Werror` 済みなので、ここでは付けない。ESP-IDF は `FMSUI_WERROR=ON` で `fmsui` と consumer の `main` に `FMSUI_WERROR_FLAGS` を付ける |
+| CI | `consumer (host)`(pull request / `master` push / 手動、timeout 30 分)と `consumer (esp-idf, esp32p4)`(`master` push / 手動、timeout 60 分、device-build と同じ digest のイメージ)を独立 job として追加。host 側は `ninja-build` だけを入れ、SDL2 は入れない。失敗時だけ 7 日の artifact を残す。ESP-IDF 側は bin サイズと component 検査を job summary に出す |
+| 文書 | `docs/USING.md` を追加。README に USING.md への導線、CI の 2 job、`consumers/` の行を追加。DESIGN.md は変えていない |
+| フレームワーク本体 | 変更なし。通常利用向けの 7 ヘッダーは実装前の時点ですでに単独でコンパイルできた(gcc 11.4 で 12 ヘッダーすべてを確認) |
+
+**実装して分かった利用契約上の事実**
+
+- `fmsui` の ESP-IDF 用 `CMakeLists.txt` は、`FMSUI_WERROR` と `FMSUI_WERROR_FLAGS` を**取り込んだプロジェクト側の変数**として読む。どちらも設定しないプロジェクトでは ESP-IDF 既定の警告方針でビルドされるだけなので、外部利用の妨げにはならない。consumer は同じ 6 フラグの一覧を自分の `CMakeLists.txt` に持ち、その理由をコメントに書いた。
+- ESP-IDF で `EXTRA_COMPONENT_DIRS` に `components/` 全体を指定すると、どこからも `REQUIRES` されていない `fmsui_fonts` までビルドに入る(ミューテーション D4 で確認)。USING.md に「`components/fmsui` を個別に書く」と記載した。
+- component manager は、managed component が無くても consumer のプロジェクト直下に `dependencies.lock`(中身は ESP-IDF の版だけ)を作る。ESP-IDF の版で変わるだけのファイルなので、`/consumers/esp-idf/dependencies.lock` を `.gitignore` に入れた。ステージングでも写さない。
+
+**ローカル検証**(2026-09-11。WSL2 Ubuntu 22.04 / gcc 11.4 / CMake 3.22.1 / Ninja 1.10.1 / 8 コア、Docker Desktop 29.7.2)
+
+前章と同じく、`git ls-files -co --exclude-standard` のファイルと LVGL サブモジュールの追跡ファイルだけを tar にしたスナップショットから検証した。ホストは WSL の ext4 上、ESP-IDF はコンテナの中へ展開した。
+
+| 対象 | 結果 |
+|---|---|
+| actionlint 1.7.12 + shellcheck 0.11.0 | `ci.yml` はエラー 0 件。`tools/ci/*.sh`(新規 3 本を含む)への shellcheck も指摘 0 件 |
+| `consumer (host)` 相当 | `consumer_host.sh` が rc 0。ステージ・configure・ビルド (552 ステップ)・CTest で 23 秒、`warning:` 0 件。直接実行で 11 checks すべて ok。compile commands では consumer の 10 TU すべてに `-Werror` が付き、`fmsui` 8 ソースと LVGL 531 ソースには付いていない |
+| `consumer (esp-idf, esp32p4)` 相当 | `espressif/idf:v5.5.4@sha256:b9f2d6ea…` で `consumer_idf.sh` が rc 0。単独実行で 101 秒、1598 ステップ、`warning:` 0 件。`fmsui_consumer.bin` 600,720 bytes、最小 app 領域 1,048,576 bytes に対して空き 447,856 bytes (43%)。ビルドに入った component は 108 個で、`fmsui` と `lvgl` はステージしたツリーから、`fmsui_fonts` / `m5stack_tab5` / `esp_lvgl_port` / managed component は 0 |
+| USING.md のコード例 | 「最小の Widget tree」の例を、起動部分だけ関数で包んで `-std=c++20 -Wall -Wextra -Werror -fsyntax-only` でコンパイルし、成功した |
+| 既存 `host (debug)` 相当 | 561 ステップ、`warning:` 0 件。CTest 3/3 成功、6 デモ成功 |
+| 既存 `host (asan-ubsan)` 相当 | 561 ステップ、`warning:` 0 件。`fmsui` 8/8 ソースが計装済み、CTest 3/3 成功、sanitizer の報告 0 件、6 デモ成功 |
+| 既存 `device-build (esp32p4)` 相当 | `device_build.sh` が rc 0。6 構成とも成功し、各ログの `warning:` 0 件。bin サイズは 6 構成とも前章の表と同じ(既定 906,832 bytes / 空き 41% など)。コンパイル対象 1594 件、Examples / Demos 0 / 0 件、`dependencies.lock` は不変。所要時間 394 秒は ESP-IDF consumer のミューテーションと並行して走らせた値 |
+
+**壊れた利用契約を検出できることの確認 (ミューテーション)。** スナップショットのコピーを 1 か所ずつ壊し、CI と同じスクリプトで確かめた。
+
+| # | 壊し方 | 結果 |
+|---|---|---|
+| H1 | `theme.h` から `#include "fmsui/widget.h"` を消す | consumer 本体は `fmsui.h` 経由でコンパイルできるが、`header_check/theme.cpp` が `'Widget' does not name a type` などで失敗した |
+| H2 | 通常 CMake の `fmsui` が `fmsui_fonts` にもリンクする | ステージしたツリーに `fmsui_fonts` が無く、`cannot find -lfmsui_fonts` でリンクに失敗した |
+| H3 | consumer が `${FMSUI_DIR}/demo` を include path に足し、`catalog.h` を include する | リポジトリの中でそのままビルドすると**成功**し、`consumer_host.sh` では `catalog.h: No such file or directory` で失敗した。ステージングが無いと見逃す依存の実例 |
+| H4 | `render.cpp` がテーマのフォントを無視して常に `LV_FONT_DEFAULT` を使う | check 4「each in the font the theme was given」が失敗した |
+| H5 | `requestFrame()` を空にする | check 2 の 3 件が失敗した |
+| H6 | `shutdown()` が要素ツリーを破棄しない | check 5 が失敗した |
+| H7 | `StateBase::markNeedsBuild()` を空にする | check 3「tapping it rebuilt the page」が失敗した |
+| D1 | ESP-IDF consumer の `main.cpp` に未使用の static 変数 | `-Werror=unused-variable` で失敗した |
+| D2 | `components/fmsui/src/theme.cpp` に未使用の static 変数(ESP-IDF consumer) | `-Werror=unused-variable` で失敗した。ルート以外のプロジェクトでも `FMSUI_WERROR_FLAGS` の仕組みが効く |
+| D3 | `fmsui` の component が `REQUIRES lvgl fmsui_fonts` になる | `Failed to resolve component 'fmsui_fonts' required by component 'fmsui'` で configure に失敗した |
+| D4 | consumer が `components/` 全体を指定し、そこに `fmsui_fonts` もある | ビルドは成功し、`fmsui_fonts` のソースがコンパイル対象に入った。`check_consumer_components.py` が「built as fmsui_fonts」で失敗にした |
+
+D1〜D4 はすべて元に戻した後、再ビルドと component 検査が再び成功することを確認した。
+
+**検証コマンド**
+
+```bash
+# ホスト(workflow の run: と同じ)
+bash tools/ci/consumer_host.sh ci-out/consumer-host
+
+# ESP-IDF(ESP-IDF 5.5.4 のコンテナ内)
+. "$IDF_PATH/export.sh"
+bash tools/ci/consumer_idf.sh ci-out/consumer-idf
+```
+
+**実装前に確認して決めたこと**
+
+- consumer は `consumers/` 直下に置く(`consumers/host/`、`consumers/esp-idf/`)。
+- LVGL と `lv_conf.h` は、リポジトリの固定版 (`third_party/lvgl`、`third_party/lv_conf.h`) を consumer が取り込む。
+- ESP-IDF consumer の job は device-build と同じく `master` への push と手動実行だけで起動する。
+- ローカル検証の後にこちらで commit・push し、GitHub-hosted run の結果を記録してからレビュー待ちにする。
+
+**確認せずに決めたこと**
+
+- 「依存しない」をソースの記述ではなく、必要なファイルだけを写したツリーからのビルドで保証した(`stage_consumer.sh`)。
+- host の Widget tree は計画の必須項目(build / paint、`requestFrame()`、`shutdown()`)に加えて、pointer indev からのタップで `setState()` も通すことにした。
+- host consumer は通常設定だけで走らせ、ASan / UBSan 版は作っていない。フレームワーク本体の sanitizer 検証は既存の host job が担う。
+- 単独コンパイルの対象は通常利用向けの 7 ヘッダーと入口の `fmsui.h` にし、`refresh.h` / `render.h` / `element.h` / `arena.h` は含めなかった。
+- consumer 自身の target の警告だけを `-Werror` にし、host 側の `fmsui` ソースには付けなかった(既存 host job と重複するため)。
+- ESP-IDF consumer の main タスクのスタックを 8192 にした。実機では動かしていないので、この値は検証していない。
+- host consumer の job では SDL2 を入れない。
+- 既存 job と同じく、検査は `tools/ci/` のスクリプトにし、workflow にはインラインで書かなかった。job summary の文言は英語にした。
+- `/ci-out/`、`/consumers/*/build*/`、`/consumers/esp-idf/dependencies.lock` を `.gitignore` に加えた。
+
 ## 計画中・未実装
 
 いまのところ無し。次の判断が決まったらここに書く。

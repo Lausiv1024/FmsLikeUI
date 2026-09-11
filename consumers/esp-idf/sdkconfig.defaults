@@ -1,0 +1,16 @@
+# The ESP-IDF consumer: FmsLikeUI on the ESP32-P4 with no board at all.
+# Nothing here is the Tab5's (PSRAM, flash size, chip revision, display
+# buffers, console). An application adds its own board's settings.
+
+CONFIG_IDF_TARGET="esp32p4"
+
+# --- LVGL examples and demos. LVGL's own ESP-IDF build reads these two to decide
+#     what to compile even though LV_KCONFIG_IGNORE takes the rest of the
+#     configuration from lv_conf.h, and Kconfig defaults both to y. ---
+# CONFIG_LV_BUILD_EXAMPLES is not set
+# CONFIG_LV_BUILD_DEMOS is not set
+
+# --- app_main runs LVGL and the frame loop on its own task, and a build pass
+#     recurses as deep as the widget tree. ESP-IDF's default main task stack
+#     (3584 bytes) is sized for a task that does neither. ---
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
