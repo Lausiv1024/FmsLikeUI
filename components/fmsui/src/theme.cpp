@@ -48,7 +48,7 @@ FmsMetrics denseMetrics() {
 }
 
 const FmsThemeData &FmsTheme::of(BuildContext &ctx) {
-    const Widget *w = ctx.findAncestorInherited(widgetTypeOf<FmsTheme>());
+    const Widget *w = Element::of(ctx).findAncestorInherited(widgetTypeOf<FmsTheme>());
     assert(w != nullptr && "FmsTheme::of() called from outside any FmsTheme");
     return static_cast<const FmsTheme *>(w)->data;
 }

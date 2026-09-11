@@ -64,8 +64,13 @@ endif()
 target_compile_options(fmsui_sim PRIVATE -Wall -Wextra)
 
 # Layout maths and reconciliation, tested headlessly.
+#
+# The one target outside the library that is given its internal headers: it
+# drives the arena and the element tree directly.  The other two tests below use
+# the public API only, the way an application would.
 enable_testing()
 add_executable(fmsui_test ${REPO_ROOT}/tests/fmsui_test.cpp)
+target_include_directories(fmsui_test PRIVATE ${REPO_ROOT}/components/fmsui/src/internal)
 target_link_libraries(fmsui_test PRIVATE fmsui lvgl)
 target_compile_options(fmsui_test PRIVATE -Wall -Wextra)
 if(FMSUI_SANITIZE)

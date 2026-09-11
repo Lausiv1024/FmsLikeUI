@@ -4,6 +4,8 @@
 #include <cstdarg>
 #include <cstdio>
 
+#include "fmsui/arena.h"
+
 namespace fmsui {
 
 ThreadIdFn BuildOwner::thread_id_fn_ = nullptr;

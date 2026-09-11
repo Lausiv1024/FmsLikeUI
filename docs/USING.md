@@ -122,20 +122,31 @@ LVGL の ESP-IDF 用ビルドは、`LV_KCONFIG_IGNORE` を付けてもこの 2 �
   作る lv_obj をすべてその直下に絶対座標で並べます。重なり順を child の index で決めるので、
   同じ screen に利用側の lv_obj を置くことは想定していません。
 - LVGL timer 1 つ(周期 10ms)。フレームごとの再ビルド・レイアウト・LVGL への反映はその中で行います。
-- 共有スタイルのキャッシュと、Widget 用のアリーナ。
+- 共有スタイルのキャッシュと、Widget 用のアリーナ。どちらも `shutdown()` で解放します。
 
 ## 公開 API の範囲
 
 入口は `<fmsui/fmsui.h>` です。個別のヘッダーを include してもかまいません。
+公開ヘッダーは `components/fmsui/include/fmsui/` にあるものだけで、利用側が include できるのもそれだけです。
 
 | 区分 | ヘッダー | 扱い |
 |---|---|---|
-| 通常のアプリが使う | `app.h`、`foundation.h`、`widget.h`、`widgets.h`、`theme.h`、`fms.h`、`str.h` | 利用契約に含む。どれも単独で include してコンパイルできることを CI で確かめている |
-| 診断・高度な拡張 | `refresh.h`(LVGL の再描画時間)、`render.h`(`CustomPaint` に渡す `Painter` と `Canvas`、`RenderObject`、`styleCacheStats()`) | 使ってよいが、通常の利用より変わりやすい |
-| フレームワーク内部 | `element.h`、`arena.h` | 互換性を約束しない |
+| 通常のアプリが使う | `app.h`、`foundation.h`、`widget.h`、`widgets.h`、`theme.h`、`fms.h`、`str.h` | 利用契約に含む |
+| 診断・高度な拡張 | `refresh.h`(LVGL の再描画時間)、`render.h`(`CustomPaint` に渡す `Painter` と `Canvas`、独自の RenderObjectWidget を作るための `RenderObject`、`styleCacheStats()`) | 使ってよいが、通常の利用より変わりやすい |
+| 入口 | `fmsui.h` | 上の 9 つをまとめて include する。内部のヘッダーは含まない |
 
-内部のヘッダーも、いまは `fmsui.h` や `widgets.h` から推移的に見えます。
-見えることは利用契約に含むことを意味しません。物理的に非公開の場所へ移すかどうかは、まだ決めていません。
+この 10 個は、どれも単独で include してコンパイルできることを CI で確かめています。
+
+**フレームワーク内部**のアリーナ(`arena.h`)と Element ツリー(`element.h`)は `components/fmsui/src/internal/fmsui/` にあり、
+ライブラリ自身のビルドにだけ PRIVATE な include path として渡されます(ESP-IDF では `PRIV_INCLUDE_DIRS`)。
+利用側からは `<fmsui/arena.h>` も `<fmsui/element.h>` も include できず、できないことを CI で確かめています。
+この 2 つを直接使っていたコードは利用契約の対象外で、互換用のヘッダーは置いていません。
+
+- `build()` が受け取る `BuildContext` は、中身の見えない型です。参照を受け取って `FmsTheme::of(ctx)` などへ渡すだけで、
+  作ったり、コピーしたり、中を読んだりはできません。
+- Widget は `new` でアリーナから取られ、`delete` はしません。前回のビルドの Widget(とそのコールバック)は次のビルドの間も残り、
+  その次のビルドで仮想デストラクタが呼ばれます。
+- `setThreadId()` に渡す `ThreadId` / `ThreadIdFn` は `app.h` にあります。
 
 ## ライフサイクル
 
@@ -156,7 +167,7 @@ for (;;) {
 }
 
 // 終わらせるとき
-app.shutdown();                // タイマ停止 → 木と lv_obj の破棄 → 共有スタイルの解放
+app.shutdown();                // タイマ停止 → 木と lv_obj の破棄 → Widget とアリーナの解放 → 共有スタイルの解放
 lv_display_delete(display);    // shutdown() の後で
 ```
 
@@ -165,7 +176,8 @@ lv_display_delete(display);    // shutdown() の後で
    `builder` の中身はビルドパスの中で走るので、`fmt()` もここで使えます。
 3. **フレームループ** は `lv_timer_handler()` を呼んだスレッドで走ります。最初のフレームで、そのスレッドを木の持ち主として記録します。
    何も変わっていないフレームでは、フラグを 1 つ見るだけで戻ります。
-4. **`shutdown()`** は、木が作った lv_obj をすべて消し、それが指していた共有スタイルを最後に解放します。
+4. **`shutdown()`** は、木が作った lv_obj をすべて消し、直近 2 回のビルドの Widget とアリーナのメモリを解放して、
+   lv_obj が指していた共有スタイルを最後に解放します。
    LVGL の display を消す前に呼んでください。実機でアプリがプロセスそのものなら、呼ばなくてかまいません。
    シミュレータとテストは、LeakSanitizer に報告を残さないために呼んでいます。
 
@@ -266,6 +278,7 @@ runApp([theme] { return new FmsTheme{{.data = theme, .child = new Page{}}}; });
 
 - ESP Component Registry、GitHub Release、インストール済み CMake package での配布
 - SemVer によるソース・ABI の長期互換
+- 公開する型のサイズと ABI、内部ヘッダー(`src/internal/`)の中身
 - ビルド済みライブラリ、署名、配布アーカイブ
 - M5Stack Tab5 以外のボードでの動作と、ボードの初期化(BSP)の提供
 - 上の「確認済みの環境」以外の LVGL・コンパイラ・ESP-IDF・ターゲット
@@ -275,8 +288,8 @@ runApp([theme] { return new FmsTheme{{.data = theme, .child = new Page{}}}; });
 
 | プロジェクト | 何を確かめるか | CI job |
 |---|---|---|
-| [`consumers/host/`](../consumers/host) | ルートの CMake、`sim/`、`demo/`、`tests/`、`fmsui_fonts` を含まないツリーで configure・ビルド・実行する。headless の display と pointer を利用側で持ち、`runApp()`、ビルドと描画、別スレッドからの `requestFrame()`、タップからの `setState()`、利用側のフォント、`shutdown()` を確かめる。通常利用向けの 7 ヘッダーと `fmsui.h` を 1 つずつ単独でコンパイルする | `consumer (host)`(pull request、`master` への push、手動) |
-| [`consumers/esp-idf/`](../consumers/esp-idf) | `main/`、`demo/`、Tab5 BSP、`fmsui_fonts` を含まないツリーで、同じ Widget tree を ESP32-P4 向けにビルド・リンクする。ビルドに入った component に `fmsui_fonts`、BSP、`esp_lvgl_port` が無いことを確かめる | `consumer (esp-idf, esp32p4)`(`master` への push、手動) |
+| [`consumers/host/`](../consumers/host) | ルートの CMake、`sim/`、`demo/`、`tests/`、`fmsui_fonts` を含まないツリーで configure・ビルド・実行する。headless の display と pointer を利用側で持ち、`runApp()`、ビルドと描画、別スレッドからの `requestFrame()`、タップからの `setState()`、利用側のフォント、`shutdown()` を確かめる。公開ヘッダー 10 個を 1 つずつ単独でコンパイルし、内部ヘッダーを include するとヘッダーが見つからずに失敗することを確かめる | `consumer (host)`(pull request、`master` への push、手動) |
+| [`consumers/esp-idf/`](../consumers/esp-idf) | `main/`、`demo/`、Tab5 BSP、`fmsui_fonts` を含まないツリーで、同じ Widget tree を ESP32-P4 向けにビルド・リンクする。ビルドに入った component に `fmsui_fonts`、BSP、`esp_lvgl_port` が無いこと、`main` の include path から fmsui の内部ヘッダーに届かないことを確かめる | `consumer (esp-idf, esp32p4)`(`master` への push、手動) |
 
 両方とも `consumers/shared/` の同じページを使い、フレームワークは `<fmsui/fmsui.h>` からしか使いません。
 consumer の検証は既存の host job や device-build とは別の job なので、利用契約が壊れたときは、内部テストやデモが通っていてもその名前で失敗します。

@@ -43,20 +43,35 @@ add_executable(fmsui_consumer main.cpp ../shared/consumer_page.cpp)
 target_include_directories(fmsui_consumer PRIVATE ../shared)
 target_link_libraries(fmsui_consumer PRIVATE fmsui::fmsui lvgl::lvgl Threads::Threads)
 
-# Every header an application is meant to include, each compiled first and
-# alone in a translation unit of its own.  A header that only builds because
-# something else happened to be included before it fails here.  refresh.h and
-# render.h (diagnostics, extension) and element.h and arena.h (internal) are
-# not part of that promise, so they are not listed.
-set(FMSUI_APP_HEADERS fmsui app foundation widget widgets theme fms str)
+# Every public header, each compiled first and alone in a translation unit of
+# its own: the seven for every application, refresh.h and render.h for
+# diagnostics and extension, and the umbrella.  A header that only builds
+# because something else happened to be included before it fails here.
+set(FMSUI_PUBLIC_HEADERS
+  app foundation widget widgets theme fms str   # every application
+  refresh render                                # diagnostics, extension
+  fmsui)                                        # the umbrella
 set(header_check_sources)
-foreach(FMSUI_HEADER IN LISTS FMSUI_APP_HEADERS)
+foreach(FMSUI_HEADER IN LISTS FMSUI_PUBLIC_HEADERS)
   set(tu ${CMAKE_BINARY_DIR}/header_check/${FMSUI_HEADER}.cpp)
   configure_file(header_check.cpp.in ${tu} @ONLY)
   list(APPEND header_check_sources ${tu})
 endforeach()
 add_library(fmsui_header_check OBJECT ${header_check_sources})
 target_link_libraries(fmsui_header_check PRIVATE fmsui::fmsui)
+
+# The headers that are internal to the library, which an application must not
+# be able to include.  Each probe is a translation unit that tries, linked the
+# way the application is; it is left out of the default build, and
+# tools/ci/check_internal_headers.py builds it and requires the compiler to
+# report the header as not found.  Not a CTest: the test here is that the build
+# fails, and for that one reason.
+foreach(FMSUI_HEADER IN ITEMS arena element)
+  set(tu ${CMAKE_BINARY_DIR}/internal_header_probe/${FMSUI_HEADER}.cpp)
+  configure_file(internal_header_probe.cpp.in ${tu} @ONLY)
+  add_library(fmsui_internal_probe_${FMSUI_HEADER} OBJECT EXCLUDE_FROM_ALL ${tu})
+  target_link_libraries(fmsui_internal_probe_${FMSUI_HEADER} PRIVATE fmsui::fmsui)
+endforeach()
 
 foreach(target fmsui_consumer fmsui_header_check)
   target_compile_options(${target} PRIVATE -Wall -Wextra)

@@ -1,0 +1,5 @@
+/* Generated from consumers/host/internal_header_probe.cpp.in: a header that is
+ * internal to the library. This must NOT compile -- see
+ * tools/ci/check_internal_headers.py, which builds it and expects the header not
+ * to be found. */
+#include <fmsui/@FMSUI_HEADER@.h>

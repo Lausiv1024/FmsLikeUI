@@ -38,7 +38,7 @@ std::atomic<uint32_t> g_sample{0};
 uint32_t millis() { return static_cast<uint32_t>(esp_timer_get_time() / 1000); }
 uint32_t micros() { return static_cast<uint32_t>(esp_timer_get_time()); }
 
-/* Not std::this_thread::get_id(): see ThreadId in fmsui/element.h. */
+/* Not std::this_thread::get_id(): see ThreadId in fmsui/app.h. */
 fmsui::ThreadId thread_id() {
     return reinterpret_cast<fmsui::ThreadId>(xTaskGetCurrentTaskHandle());
 }

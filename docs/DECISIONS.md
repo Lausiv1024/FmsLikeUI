@@ -1074,7 +1074,246 @@ bash tools/ci/consumer_idf.sh ci-out/consumer-idf
 
 ## レビュー待ち
 
-いまのところ無し。
+### 2026-09-11: 公開 API 境界の物理的な分離
+
+**状態: レビュー待ち (2026-09-11)。実装と検証の結果を章末に記録した。完了条件のチェックはレビューで行う。**
+
+外部 consumer によってソース組み込みの利用契約は確認できたが、公開 API と内部実装の境界は
+まだ文書上の分類にとどまっている。現在の `<fmsui/fmsui.h>` は `arena.h` と `element.h` を直接
+includeし、`widget.h` は `ArenaObject`、`app.h` は `BuildArenas` / `BuildOwner` / Element treeを
+公開クラスの定義へ含めている。このため、内部扱いと記載した型をconsumerが直接使えてしまい、
+内部構造の変更が公開ヘッダーの変更になる。
+
+この計画では、既に決めたAPI分類を実際のディレクトリ、include path、consumerテストで保証する。
+FMSアプリケーションやデモの機能を増やす計画ではない。
+
+#### 1. 公開する範囲
+
+初版の公開範囲を次のように固定する。
+
+- 通常のアプリ向け: `app.h`、`foundation.h`、`widget.h`、`widgets.h`、`theme.h`、`fms.h`、`str.h`
+- 診断・高度な拡張向け: `refresh.h`、`render.h`
+- 入口: `fmsui.h`。上の通常向けと高度向けだけをまとめ、内部ヘッダーは含めない
+- フレームワーク内部: 現在の `arena.h` と `element.h`
+
+`render.h` は単なる内部実装ではない。`CustomPaint` の `Painter` / `Canvas` と、独自の
+RenderObjectWidgetを作る高度な拡張点を持つため、変わりやすいことを明記した公開APIとして残す。
+`refresh.h`も診断用の公開APIとして残す。
+
+`arena.h`と`element.h`は、まだSemVer互換を約束しておらず、既に内部扱いと記録している。
+旧パス `<fmsui/arena.h>` / `<fmsui/element.h>` の互換ラッパーやdeprecated期間は設けず、
+公開include領域から削除する。直接利用していたコードは公開契約の対象外とする。
+
+#### 2. 内部型を公開ヘッダーから外す
+
+内部ヘッダーは、例えば `components/fmsui/src/internal/` のようなライブラリ自身だけが使う場所へ移し、
+CMake / ESP-IDFのビルドではPRIVATEなinclude pathとして与える。最終的なディレクトリ名は実装時に
+既存ソースのinclude関係を見て決めるが、consumerへPUBLICに渡さないことを条件とする。
+
+- `Widget`は公開の`ArenaObject`を継承しない形へ変える。一方、`new Widget`が現在のbuild arenaから
+  確保されること、構築済みWidgetのvirtual destructorがreset時に逆順で呼ばれること、2つのarenaを
+  交互に使う寿命は変えない。
+- `BuildContext`はconsumerが`build()`で受け取り、`FmsTheme::of(ctx)`などへ渡せる不透明型にする。
+  Elementのフィールドやreconcile処理は公開しない。
+- `Element`を返す`createElement()`など、Widget基底クラスが内部実装と接続する箇所は、前方宣言と
+  ライブラリ内部の定義だけで成立させる。通常のStatelessWidget / StatefulWidget利用者に
+  Element定義を要求しない。
+- `ThreadId` / `ThreadIdFn`は`setThreadId()`の公開契約なので、内部の`BuildOwner`ではなく
+  `app.h`側で宣言する。
+- `FmsApp`の`BuildArenas`、`BuildOwner`、Element tree、統計mutexなどを`.cpp`側へ移す。
+  `requestFrame()`、`requester()`、`screenSize()`、`setClock()`、`setThreadId()`は内部型へ触れない
+  公開宣言と外部定義にする。
+- `FmsApp`はsingletonである現在の契約を維持し、PIMPL用の動的確保を追加しない。内部状態は
+  ライブラリ側の静的なセッション状態として持ち、初期化、`shutdown()`、再初期化の順序を変えない。
+
+これはカプセル化の変更であり、Widget / Element / RenderObjectの動作、レイアウト、描画差分、
+統計値を変えるための変更ではない。公開型のサイズやABIも、この段階では保証対象にしない。
+
+#### 3. consumerで境界を検査する
+
+既存の独立consumerを、利用契約だけでなく公開範囲の検査にも使う。
+
+- 通常向け7ヘッダー、高度向け2ヘッダー、入口の`fmsui.h`を、それぞれ翻訳単位の最初に単独includeし、
+  合計10 TUを`-Wall -Wextra -Werror`でコンパイルする。
+- consumerが`<fmsui/fmsui.h>`だけから、現在と同じ独自StatefulWidget / Widget treeを構築できることを
+  維持する。consumerページやデモへ新しい機能は足さない。
+- ステージしたツリーのPUBLIC include pathに`fmsui/arena.h`と`fmsui/element.h`が存在せず、
+  consumerからその旧パスをincludeできないことを機械判定する。
+- `components/fmsui`自身と内部単体テストだけには内部include pathを与える。consumer targetへ
+  誤って伝播した場合に検査が失敗するようにする。
+- 現在のhost consumerの10 checksをそのまま通し、build / paint、別スレッドからの`requestFrame()`、
+  タップからの`setState()`、利用側フォント、`shutdown()`の公開動作が変わっていないことを確認する。
+
+Arenaの内部化で既存テストに不足が見つかった場合は、次をframeworkの単体テストへ追加する。
+
+- Widgetのvirtual destructorがarena reset時に1回だけ呼ばれる。
+- 前回buildのWidgetが次のbuild中も生存し、その次のarena再利用で破棄される。
+- `shutdown()`が両arenaとElement treeを解放し、同じプロセスで再`init()`できる。
+
+既に同じ事実を直接判定するテストがあれば重複追加せず、そのテストを完了条件の証拠にする。
+
+#### 4. 文書と検証
+
+`docs/USING.md`のAPI表、umbrella headerの説明、非保証範囲を新しい物理境界へ合わせる。
+`docs/DESIGN.md`には、BuildContextを不透明にする理由、Widgetのarena寿命を公開継承なしで維持する方法、
+FmsApp内部状態の所有場所を記録する。READMEの利用導線は変えず、必要なら構成表だけを更新する。
+
+検証は次を別の証拠として残す。
+
+1. 公開／内部ヘッダーの配置とinclude pathの機械検査
+2. host consumerのconfigure、build、公開ヘッダー10 TU、CTest 1/1、10 checks
+3. 通常設定とASan / UBSan設定のビルド、CTest 3/3、6デモのheadless描画
+4. sanitizer設定で`fmsui`本体が計装され、報告が無いこと
+5. ESP-IDF consumerのビルドとcomponent検査
+6. 既存device-buildの6構成
+7. GitHub Actionsの5 job
+
+#### 対象外
+
+- デモアプリへの画面、入力、ドメインロジックの追加
+- Widget / Element / RenderObjectのアルゴリズム変更と性能最適化
+- clipping、scroll、animation、GlobalKey、UI taskへの関数queueの追加
+- CMake install package、ESP Component Registry、GitHub Release、配布archive
+- SemVer、ソース互換、ABI互換の保証開始
+- 実機flash、物理タッチ、スクリーンショットの見た目比較
+
+#### 実装完了の条件
+
+- [ ] `arena.h`と`element.h`がPUBLIC include領域から外れ、framework内部だけのinclude pathに置かれる。
+- [ ] `<fmsui/fmsui.h>`が通常向けと高度向けの公開APIだけを提供し、内部ヘッダーを直接includeしない。
+- [ ] Widgetのarena割り当て、virtual destructor、2世代の寿命が公開の`ArenaObject`なしで維持される。
+- [ ] BuildContextとFmsAppの公開定義がElement、BuildOwner、BuildArenasなどの内部定義を要求しない。
+- [ ] 通常向け7、高度向け2、umbrellaの公開ヘッダー10 TUが単独で警告なくコンパイルできる。
+- [ ] consumerで旧`<fmsui/arena.h>`と`<fmsui/element.h>`が利用できないことを機械判定できる。
+- [ ] host consumerのCTest 1/1と10 checksが成功する。
+- [ ] 通常／sanitizerのCTest 3/3と6デモが成功し、`fmsui`本体の計装と報告0件を確認できる。
+- [ ] ESP-IDF consumerと既存device-build 6構成が成功する。
+- [ ] `docs/USING.md`、`docs/DESIGN.md`、必要なREADME記述が新しい境界と一致する。
+- [ ] GitHub Actionsの5 jobが成功し、実装結果とレビュー結果がこの章へ記録される。
+
+#### 計画時に確認して決めたこと
+
+- 旧`arena.h` / `element.h`の互換ラッパーは残さない。
+- `render.h` / `refresh.h`は高度・診断向けの公開APIとして維持する。
+- FmsApp内部化のための追加の動的確保は行わない。
+- consumerは既存の最小Widget treeを使い続け、デモ機能を追加しない。
+- 配布方法と互換バージョン方針は、公開境界を固定した後の別判断とする。
+
+#### 実装の結果
+
+| 判断 | 実装 |
+|---|---|
+| 内部ヘッダーの置き場所 | `components/fmsui/include/fmsui/{arena,element}.h` を `components/fmsui/src/internal/fmsui/` へ移した。include の書き方は `"fmsui/arena.h"` / `"fmsui/element.h"` のまま |
+| include path | 通常 CMake は `target_include_directories(fmsui PUBLIC include PRIVATE src/internal)`、ESP-IDF は `PRIV_INCLUDE_DIRS src/internal`。ライブラリの外で与えるのは `sim/CMakeLists.txt` の `fmsui_test` だけ。`fmsui_interaction_test` と `fmsui_request_frame_test` は公開 API だけでビルドできた |
+| `fmsui.h` | `arena.h` と `element.h` の include を消した。残りは通常向け 7 と `refresh.h` / `render.h` |
+| `widget.h` / `widgets.h` | `Widget` から `ArenaObject` の継承と `arena.h` の include を消し、`virtual ~Widget()` を持たせた。`BuildContext` は `using BuildContext = Element;` から前方宣言 `class BuildContext;` にした。`widgets.h` は使っていなかった `element.h` の include を消した |
+| アリーナ | `ArenaObject` を削除し、`Arena` は `Widget *` を記録して `reset()` で `~Widget()` を逆順に呼ぶ。`Arena::release()`(reset に加えてチャンクと記録用ベクタを解放)と `BuildArenas::release()`(両面を新しいビルドから解放し、`Arena::current()` が自分を指していれば null に戻す)を追加した。`~Arena()` は `release()` を呼ぶ(以前と同じ動作) |
+| `BuildContext` の定義 | `element.h` の中身の無いクラス(コンストラクタとデストラクタは protected)で、`Element` だけが継承する。`Element::of(BuildContext &)` が Element へ戻し、`FmsTheme::of()` はこれで親を辿る |
+| `ThreadId` / `ThreadIdFn` | 説明のコメントごと `element.h` から `app.h` へ移した。`BuildOwner` は `app.h` を include して使う |
+| `FmsApp` | データメンバと private の `frame()` / `timerCb()` を削除した。状態は `app.cpp` の無名名前空間の `AppState`(`BuildArenas`、`BuildOwner`、builder、根の Element、LVGL の root / display / timer、画面サイズ、クロック、ビルド回数、統計と mutex)で、関数内 static を返す `state()` から使う。`requestFrame()`、`requester()`、`screenSize()`、`setClock()`、`setThreadId()` は `app.cpp` で定義した。コンストラクタは private、コピーは delete |
+| `shutdown()` | タイマ停止 → ツリー破棄 → `arenas.release()` → `releaseStyleCache()`。ビルド回数、統計、クロック、スレッド識別子は以前どおり残す |
+| 追加した単体テスト | `fmsui_test` に 3 件、32 checks(167 → 199)。`test_the_arena_destroys_each_widget_once_newest_first`、`test_a_build_lives_until_the_one_after_next`、`test_shutdown_releases_the_tree_and_both_arenas_and_init_works_again`。既存テストに同じ事実を直接判定するものは無かった(`test_arena_resets_between_builds` は件数とバイト数だけ、再 `init()` は操作テストの `Session` が毎回行うが、解放そのものは見ていない) |
+| 公開ヘッダーの単独コンパイル | `consumers/host/CMakeLists.txt` の対象を 8 TU から 10 TU にした(`refresh` と `render` を追加) |
+| 旧パスの機械判定(host) | `consumers/host/` に `EXCLUDE_FROM_ALL` の OBJECT ライブラリ `fmsui_internal_probe_arena` / `fmsui_internal_probe_element` を置いた(`internal_header_probe.cpp.in` から生成し、`fmsui::fmsui` にリンク)。`tools/ci/check_internal_headers.py` が (1) `include/` に 2 つが無く `src/internal/` にあること、(2) `fmsui` の全ソースに `src/internal` があること、(3) consumer の全 TU に無く、その include ディレクトリのどれにも 2 つが無いこと、(4) probe のビルドが「ヘッダーが見つからない」エラーで失敗すること、を判定する。`consumer_host.sh` が CTest の後に呼ぶ |
+| 旧パスの機械判定(ESP-IDF) | `check_consumer_components.py` に 3 行を追加した。`fmsui` の `include/` に 2 つが無いこと、`compile_commands.json` で `__idf_fmsui` の全ソースに `src/internal` があること、`__idf_main` のどのソースの include path からも 2 つに届かないこと |
+| 共通処理 | `compile_commands.json` の読み取りを `tools/ci/compile_commands.py` にまとめ、上の 2 つが import する |
+| 文書 | USING.md の API 表、内部ヘッダーの説明、`shutdown()` の順序、保証しないもの、検証表。DESIGN.md に節「公開ヘッダーと内部ヘッダー」(置き場所、BuildContext、ArenaObject をやめた方法、FmsApp の状態の所有、shutdown の順序)を追加し、アリーナ節とスタイルキャッシュ節の記述を合わせた。README の構成表に 2 行を足し、`tools/ci/` の説明を更新した。`consumers/esp-idf/main/main.cpp` のコメントの参照先を `app.h` に直した |
+| 変えていないもの | `ci.yml`(新しい検査は既存 job のスクリプトの中で走る)、デモ、`main/`、`consumers/shared/`、`fmsui_interaction_test` / `fmsui_request_frame_test` のソース |
+
+**計画からの変更点が 1 つある。** 計画は「初期化、`shutdown()`、再初期化の順序を変えない」「動作を変えるための変更ではない」としていたが、
+`shutdown()` にアリーナの解放を加えた。実装前の確認で、変更前の `shutdown()` はアリーナに触らず、直近 2 回のビルドの Widget
+(コールバックのキャプチャを含む)とチャンクが次の `init()` 後の最初のビルドかプロセス終了まで残ることが分かり、計画の追加テスト
+「`shutdown()` が両 arena と Element tree を解放し、同じプロセスで再 `init()` できる」がそのままでは成り立たなかったためである。
+確認のうえ、ツリー破棄の後・スタイル解放の前に解放することにした。レイアウト、描画、統計値、表示は変わっていない(下のデモ PNG の比較)。
+
+**ローカル検証**(2026-09-11。WSL2 Ubuntu 22.04 / gcc 11.4 / CMake 3.22.1 / Ninja 1.10.1 / 8 コア、Docker Desktop 29.7.2)
+
+作業ツリーは `core.autocrlf=true` で CRLF のファイルを含むため、tar にせず、一時 index に `git add -A` した tree(`26063bc`)と
+LVGL サブモジュール(`85aa60d`)をそれぞれ `git archive` したスナップショットから検証した。ホストは WSL の ext4 上、
+ESP-IDF は `espressif/idf:v5.5.4@sha256:b9f2d6ea…` のコンテナ内の `/w` へ展開した。コマンドと環境変数は workflow と同じ。
+番号は計画の「4. 文書と検証」の番号。
+
+| 検証 | 結果 |
+|---|---|
+| 1. ヘッダーの配置と include path | `check_internal_headers.py` の 7 行すべて成功。`include/fmsui/` は公開の 10 ヘッダーだけで、`src/internal/fmsui/` に 2 つ。`fmsui` の 8 ソースすべてに `src/internal` があり、consumer の 14 TU(consumer 2、ヘッダー検査 10、probe 2)には無い。probe は 2 つとも `fmsui/arena.h: No such file or directory` / `fmsui/element.h: No such file or directory` で失敗した |
+| 2. `consumer (host)` 相当 | `consumer_host.sh` rc 0、23 秒、554 ステップ、`warning:` 0 件。公開ヘッダー 10 TU が `-Werror` 付きでコンパイルされた。CTest 1/1、直接実行で 10 checks すべて ok |
+| 3. `host (debug)` 相当 | 561 ステップ、`warning:` 0 件。CTest 3/3。`fmsui_test` 199 checks(うち新規 32)、`fmsui_interaction_test` 134 checks、`fmsui_request_frame_test` 34 checks、いずれも 0 failures。6 デモ成功 |
+| 3・4. `host (asan-ubsan)` 相当 | 561 ステップ、ビルド 27 秒、`warning:` 0 件。`check_sanitized.py` で `fmsui` 8/8 ソースが計装済み。CTest 3/3、`check_no_sanitizer_reports.sh` 成功。直接実行でも 199 / 134 / 34 checks、0 failures、sanitizer の報告 0 件。6 デモ成功 |
+| デモの回帰 | 変更前の `HEAD`(`d5242f1`、`fmsui_test` 167 checks)を同じ環境でビルドして 6 デモを撮り、変更後の debug と asan-ubsan の PNG と比べた。6 デモとも 3 枚の md5 が一致した |
+| 5. `consumer (esp-idf, esp32p4)` 相当 | `consumer_idf.sh` rc 0、282 秒(device-build と並行)、1598 ステップ、`warning:` 0 件。component 検査の 5 行と内部ヘッダーの 3 行がすべて成功(`main` の 2 ソースから届かない)。`fmsui_consumer.bin` 600,624 bytes / 空き 447,952 bytes (43%)。前章のローカル値 600,720 bytes より 96 bytes 小さい |
+| 6. `device-build (esp32p4)` 相当 | `device_build.sh` rc 0、513 秒(consumer と並行)。6 構成とも `warning:` 0 件、コンパイル対象 1594 件、Examples / Demos 0 / 0 件、`dependencies.lock` は不変 |
+| workflow と検査スクリプト | actionlint 1.7.12 で `ci.yml`(変更なし)はエラー 0 件。shellcheck 0.11.0 で `tools/ci/*.sh` の指摘 0 件。`tools/ci/*.py` は `py_compile` に成功 |
+
+device-build の bin サイズ(最小 app 領域はどれも 1,536,000 bytes)。差の中身は比較していない。
+
+| 構成 | 前章 | この実装 | 空き |
+|---|---:|---:|---:|
+| 既定 | 906,832 bytes | 906,960 bytes (+128) | 629,040 bytes (41%) |
+| `m0` | 878,464 bytes | 878,464 bytes (0) | 657,536 bytes (43%) |
+| `m1` | 912,688 bytes | 912,688 bytes (0) | 623,312 bytes (41%) |
+| `catalog` | 934,272 bytes | 934,272 bytes (0) | 601,728 bytes (39%) |
+| `fplan` | 901,792 bytes | 901,792 bytes (0) | 634,208 bytes (41%) |
+| `reorder` | 918,336 bytes | 918,464 bytes (+128) | 617,536 bytes (40%) |
+
+**壊れた実装を検出できることの確認 (ミューテーション)。** 1 か所ずつ壊して、CI と同じスクリプトで確かめた。
+
+| # | 壊し方 | 結果 |
+|---|---|---|
+| T1 | `shutdown()` から `arenas.release()` を消す | shutdown のテストが 2 回とも `g_live_tracers == 0` と `Arena::current() == nullptr` で失敗した(4 failures) |
+| T2 | `Arena::reset()` が `~Widget()` を呼ばない | 新しい 3 テストすべてが失敗した(13 failures) |
+| T3 | `beginBuild()` が前回のビルドの面も reset する | 2 世代のテスト(次のビルドの間に前のビルドの Widget が消えている)と shutdown のテストが失敗した(8 failures) |
+| C1 | 通常 CMake の `fmsui` が `src/internal` を PUBLIC にする | `consumer_host.sh` rc 1。consumer の 14 TU すべてに `src/internal` があり、probe 2 つがコンパイルできた |
+| C2 | `element.h` を `include/fmsui/` にもコピーする | rc 1。`include/` に内部ヘッダーがあり、`element` の probe がコンパイルできた |
+| C3 | consumer の target 自身に `src/internal` を足す | rc 1。`main.cpp` と `consumer_page.cpp` に `src/internal` があると判定した。probe は失敗したままなので、この形の漏れを捕まえるのは include path の行 |
+| C4 | `fmsui.h` が `fmsui/element.h` を再び include する | consumer のビルドそのものが `fatal error: fmsui/element.h: No such file or directory` で失敗した |
+| D1 | ESP-IDF の `fmsui` が `src/internal` を `INCLUDE_DIRS` に入れる | ビルドは通ったが、`consumer_idf.sh` が rc 1。`main` の 2 ソースから内部ヘッダーに届くと判定した |
+
+T1〜T3 は最初、元に戻したファイルの mtime が壊したファイルのオブジェクトより古く、ninja が再コンパイルしなかったため、前のミューテーションが残ったまま走っていた。
+元に戻すたびにスナップショットから展開し直して `touch` する形でやり直し、表はやり直した結果を載せた。戻した後はソースがスナップショットとバイト一致し、
+`fmsui_test` 199 checks・0 failures、CTest 3/3 を確認した。C1〜C4 は毎回新しいコピー、D1 は新しいコンテナで行ったので、この問題の影響は無い。
+
+**GitHub-hosted run**
+
+この実装の commit を push した後の run を、ここに記録する。
+
+**検証コマンド**
+
+```bash
+# ホスト(workflow の run: と同じ)
+export ASAN_OPTIONS=halt_on_error=1:detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
+cmake -S sim -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DFMSUI_SANITIZE=ON -DFMSUI_WERROR=ON   # debug は OFF
+cmake --build build
+python3 tools/ci/check_sanitized.py build                                                   # asan-ubsan だけ
+ctest --test-dir build --output-on-failure --timeout 120
+bash tools/ci/render_demos.sh build/fmsui_sim ci-out/demos
+bash tools/ci/consumer_host.sh ci-out/consumer-host      # 最後に check_internal_headers.py を呼ぶ
+
+# ESP-IDF(ESP-IDF 5.5.4 のコンテナ内)
+. "$IDF_PATH/export.sh"
+bash tools/ci/consumer_idf.sh ci-out/consumer-idf        # check_consumer_components.py に内部ヘッダーの 3 行
+bash tools/ci/device_build.sh build-ci ci-out/device
+```
+
+**実装前に確認して決めたこと**
+
+- 内部ヘッダーは `components/fmsui/src/internal/fmsui/` に置き、include の書き方は変えない。内部の include path が漏れると
+  旧パスがコンパイルできてしまうので、「旧パスを include できない」判定がそのまま漏れの検出になる。
+- `shutdown()` で両アリーナを解放する(上記)。
+- ローカル検証の後にこちらで commit・push し、GitHub-hosted run の結果を記録してからレビュー待ちにする。未 push の `d5242f1` と、この計画章の追加も一緒に送る。
+
+**確認せずに決めたこと**
+
+- `BuildContext` は公開側では不完全型(前方宣言だけ)にし、定義を `element.h` の空のクラスにした。
+- アリーナは基底クラスを介さず `Widget *` を記録する形にし、`ArenaObject` は内部にも残さず削除した。
+- `FmsApp` のコンストラクタを private にし、コピーを delete にした。状態がインスタンスのものではなくなったため。`instance()` 以外で作っているコードは無かった。
+- `AppState` は `FmsApp::instance()` と同じく関数内 static にした。
+- `BuildArenas::release()` はチャンクまで free し、`Arena::current()` を null に戻す。`highWaterMark()`(統計の `arena_bytes`)は戻さない。
+- `Widget::createElement()` は public の純粋仮想のまま残した(`Element` の前方宣言で足りるため)。
+- 旧パスの判定は CTest にせず、スクリプトからビルドして失敗の理由まで見る形にした。完了条件の「CTest 1/1」を保つためでもある。
+- ESP-IDF consumer にも内部ヘッダーの判定を足した。計画には host 側しか書かれていないが、ESP-IDF は `PRIV_INCLUDE_DIRS` という別の経路で渡すため。
+- `compile_commands.py` を共通モジュールにした。既存の `check_sanitized.py` / `check_lvgl_sources.py` は変えていない。
+- ローカル検証のスナップショットは、`core.autocrlf=true` の作業ツリーを tar にせず、一時 index に `git add -A` した tree を `git archive` して作った。
+  GitHub のチェックアウトと同じ LF の内容になる。
 
 ## 計画中・未実装
 

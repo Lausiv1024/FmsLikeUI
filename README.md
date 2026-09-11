@@ -163,6 +163,8 @@ MSBuild になる・`$ENV{IDF_PATH}` 次第で別の ESP-IDF が読まれる、�
 | ディレクトリ | 中身 |
 |---|---|
 | `components/fmsui/` | フレームワーク本体。LVGL にのみ依存し、ESP-IDF には依存しない |
+| `components/fmsui/include/fmsui/` | 公開ヘッダー。利用側が include できるのはここだけ([docs/USING.md](docs/USING.md#公開-api-の範囲)) |
+| `components/fmsui/src/internal/fmsui/` | 内部ヘッダー(アリーナと Element ツリー)。ライブラリ自身と `tests/fmsui_test.cpp` だけが使う |
 | `components/fmsui/src/arena.cpp` | Widget 用のバンプアロケータ |
 | `components/fmsui/src/element.cpp` | 差分検出(Element ツリー) |
 | `components/fmsui/src/render.cpp` | レイアウトと LVGL への描画 |
@@ -177,7 +179,7 @@ MSBuild になる・`$ENV{IDF_PATH}` 次第で別の ESP-IDF が読まれる、�
 | `tools/gen_lv_conf.py` | `lv_conf.h` を LVGL のテンプレートから生成 |
 | `tools/gen_fonts.py` | TTF を LVGL のビットマップフォントに変換 |
 | `tools/serial_capture.py` | 実機のシリアルログを取る |
-| `tools/ci/` | CI が呼ぶ検査。デモの描画、サニタイザ計装とその報告、実機ビルド 6 構成と LVGL ソースの内訳、consumer のビルドとその component の内訳 |
+| `tools/ci/` | CI が呼ぶ検査。デモの描画、サニタイザ計装とその報告、実機ビルド 6 構成と LVGL ソースの内訳、consumer のビルドとその component の内訳、consumer から内部ヘッダーに届かないこと |
 | `tools/idf.bat` | Windows から ESP-IDF を叩く(実機ビルドの主経路) |
 | `tools/idf.sh` | 同じことを WSL から。interop が生きているときだけ動く |
 

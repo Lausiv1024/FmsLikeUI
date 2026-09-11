@@ -39,9 +39,11 @@ Flutter の Widget は GC 前提の使い捨てオブジェクトです。C++ �
 **`Widget::operator new` をアリーナに差し替えて**います。`build()` の中の `new Column{...}` は
 ポインタを進めるだけで、ヒープを触りません。
 
-デストラクタは走ります(Widget は `std::function` を持つため)。アリーナは確保したオブジェクトを
+デストラクタは走ります(Widget は `std::function` を持つため)。アリーナは確保した Widget を
 記録しておき、`reset()` で構築の逆順に仮想デストラクタを呼びます。登録は `operator new` ではなく
 **Widget のコンストラクタ**で行います — その時点で vtable が入っているので、後で仮想ディスパッチが効きます。
+アリーナ自体はライブラリの内部にあり、アプリケーションからは見えません
+([公開ヘッダーと内部ヘッダー](#公開ヘッダーと内部ヘッダー))。
 
 アリーナは **2 面あって交互に使います**。あるパスが片方を埋めている間、前のパスの Widget はもう片方に
 無傷で残っています。これによって、前フレームに捕まえたコールバックや `State::widget()` が、
@@ -79,6 +81,71 @@ Element に Widget のコピーを所有させて dirty サブツリーだけ再
 (全 Widget に `clone()` を実装するボイラープレートが対価)。
 
 いま最適化しないのは、**その必要が無いことを実機の数字が示しているから**です。
+
+## 公開ヘッダーと内部ヘッダー
+
+`components/fmsui/include/fmsui/` が公開 API で、アリーナ(`arena.h`)と Element ツリー(`element.h`)は
+`components/fmsui/src/internal/fmsui/` に分けてあります。内部のほうは、ライブラリ自身と、Element を直接叩く
+`tests/fmsui_test.cpp` のビルドにだけ PRIVATE な include path として渡すので、アプリケーションからは include できません。
+内部の型を変えても、公開ヘッダーは変わりません。利用側から見た区分は [USING.md](USING.md#公開-api-の範囲) にあります。
+
+内部ヘッダーにも `fmsui/` の接頭辞を残しています。こうしておくと、内部の include path が利用側へ漏れたときに
+`<fmsui/element.h>` がそのままコンパイルできてしまうので、「include して、見つからずに失敗すること」を見る
+consumer の検査(`tools/ci/check_internal_headers.py`)が、漏れをそのまま捕まえます。
+
+### BuildContext は中身を見せない
+
+Flutter と同じく、`BuildContext` の正体は Element です。以前は `using BuildContext = Element;` で、
+`build(BuildContext &ctx)` を書くアプリケーションは Element の定義 —— フィールド、突合の関数、`BuildOwner` —— を
+丸ごと見ていました。いまは `widget.h` が `class BuildContext;` と宣言するだけで、定義は `element.h` にあります。
+中身の無いクラスで、Element だけがこれを継承します。アプリケーションは参照を受け取って `FmsTheme::of(ctx)` へ
+渡すだけで、ライブラリの中では `Element::of(ctx)` で Element へ戻して親を辿ります。
+
+基底が 1 つ増えただけで、中身は空です。Element のメンバも仮想関数の呼び出しも変わりません。
+
+### Widget は ArenaObject を継承しない
+
+以前の `Widget` は、仮想デストラクタだけを持つ `ArenaObject` を継承していて、そのために `widget.h` が
+`arena.h` を include していました。アリーナが破棄するのは Widget だけなので、いまは `Arena` が `Widget *` を
+そのまま記録し、`reset()` で `~Widget()` を構築の逆順に呼びます。`Widget` 自身は仮想デストラクタを持つ普通の基底クラスです。
+
+変えていないこと:
+
+- `Widget::operator new` が現在のビルドのアリーナから取る
+- 登録はコンストラクタで行い、vtable が入ってから記録される
+- アリーナは 2 面を交互に使い、前回のビルドの Widget は次のビルドの間も残り、その次のビルドで破棄される
+
+`test_the_arena_destroys_each_widget_once_newest_first` と `test_a_build_lives_until_the_one_after_next` が押さえています。
+
+### FmsApp の状態はライブラリが持つ
+
+`FmsApp` のメンバだった `BuildArenas`、`BuildOwner`、Element ツリーの根、フレームタイマ、統計とその mutex は、
+`app.cpp` の無名名前空間にある `AppState` へ移しました。`FmsApp` 自身はデータメンバを持たないので、公開ヘッダーに
+内部の型が出てきません。
+
+PIMPL のようにポインタの先へ隠すことはしていません。`FmsApp` はプロセスに 1 つなので状態も 1 つでよく、
+`AppState` は `FmsApp::instance()` と同じく関数内 static にしました。動的確保は増えていません。関数内 static なので、
+最初の利用がどのスレッドから来ても安全で、producer の `requestFrame()` が最初の呼び出しでもかまいません。
+
+`FmsApp` のコンストラクタは private にし、コピーも禁じました。状態がインスタンスのものではなくなったので、
+2 つ目の `FmsApp` を作れると、同じ状態を指す別名が黙ってできてしまうからです(もともと `instance()` 以外で
+作っているコードはありませんでした)。
+
+`requestFrame()` は、ヘッダーのインライン関数から `app.cpp` の関数になりました。中身は変わらず release ストア 1 回で、
+増えたのは関数呼び出し 1 回と、`AppState` が初期化済みかどうかの確認 1 回です。確保もロックもブロックもしません。
+IRAM のハンドラから使う `FrameRequester::request()` は、以前どおりインラインです。
+
+### shutdown() はアリーナも解放する
+
+`shutdown()` の順序は **タイマ停止 → Element ツリー破棄(= `lv_obj` も破棄)→ 両アリーナの Widget の破棄とメモリの解放 →
+スタイル解放** です。以前はアリーナに触らず、直近 2 回のビルドの Widget とそのコールバックのキャプチャが、次の `init()` の
+後の最初のビルドか、プロセスの終了まで残っていました。
+
+アリーナの解放をツリーの後に置いているのは、ツリーの破棄で走る `State::dispose()` が `widget()` を読めるようにするためです。
+解放した後は `Arena::current()` も null に戻すので、セッションの外で Widget を作れば assert で止まります。
+
+`test_shutdown_releases_the_tree_and_both_arenas_and_init_works_again` が、同じプロセスで `init()` から `shutdown()` までを
+2 回繰り返し、State の破棄、`lv_obj` と両アリーナの Widget が 0 に戻ることを確かめています。
 
 ## 実機用のポート層は作っていない
 
@@ -500,7 +567,7 @@ dirty サブツリー再ビルドはまだ実装していません — **必要�
 所有者は `render.cpp` 内の `StyleCache` で、エントリを 1 個ずつヒープに置きます
 (ベクタが伸びても `&style` が動かないように)。実機ではアプリケーション存続中の常駐キャッシュです。
 シムとテストは `FmsApp::shutdown()` で終わらせます —— **タイマ停止 → Element ツリー破棄
-(= `lv_obj` も破棄)→ スタイル解放**の順で、これを逆にすると解放済みスタイルを指したまま
+(= `lv_obj` も破棄)→ アリーナ解放 → スタイル解放**の順で、ツリーとスタイルを逆にすると解放済みスタイルを指したまま
 オブジェクトが残ります。この順序があるので LeakSanitizer 下の `fmsui_test` と
 `fmsui_sim --shot` はスタイル由来の報告を出しません。
 

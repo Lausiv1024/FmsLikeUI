@@ -5,14 +5,15 @@
  *
  * Widgets are always allocated from the build arena -- `operator new` is
  * overridden to see to that -- so `new Column{{...}}` inside build() is a
- * pointer bump, not a heap allocation.
+ * pointer bump, not a heap allocation.  The arena itself is internal to the
+ * library: each Widget registers with it as it is constructed, and it runs the
+ * virtual destructor below when it rewinds, newest first.
  */
 
 #include <cstddef>
 #include <functional>
 #include <initializer_list>
 
-#include "fmsui/arena.h"
 #include "fmsui/foundation.h"
 #include "fmsui/str.h"
 
@@ -22,9 +23,13 @@ class Element;
 class RenderObject;
 class StateBase;
 
-/* Flutter's BuildContext is the Element itself; keep that, so `Theme::of(ctx)`
- * can walk the element tree in M2. */
-using BuildContext = Element;
+/* What build() is handed, and what `FmsTheme::of(ctx)` takes.
+ *
+ * Opaque on purpose.  It is the Element the widget is mounted as -- Flutter's
+ * BuildContext is too -- but that Element's fields and the reconciler behind
+ * them are the framework's to change.  So an application gets a reference it
+ * can pass along, and nothing it can reach into. */
+class BuildContext;
 
 /* A runtime type identity that does not need RTTI (which ESP-IDF disables by
  * default): the address of a per-class static byte. */
@@ -44,14 +49,19 @@ constexpr WidgetType widgetTypeOf() {
     return &detail::TypeTag<T>::id;
 }
 
-class Widget : public ArenaObject {
+class Widget {
 public:
     Widget();
-    ~Widget() override = default;
+    virtual ~Widget() = default;
 
     Key key{};
 
     virtual WidgetType type() const = 0;
+
+    /* The framework's side of a widget.  StatelessWidget, StatefulWidget,
+     * InheritedWidget and the RenderObjectWidget bases below implement it; a
+     * widget an application writes derives from one of those and does not
+     * override this. */
     virtual Element *createElement() const = 0;
 
     /* Two widgets reconcile onto the same Element only if both the type and the

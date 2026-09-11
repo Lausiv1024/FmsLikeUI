@@ -3,16 +3,15 @@
 #include <cassert>
 #include <cstdlib>
 
+#include "fmsui/widget.h"
+
 namespace fmsui {
 
 Arena *Arena::current_ = nullptr;
 
 Arena::Arena(size_t chunk_bytes) : chunk_bytes_(chunk_bytes) {}
 
-Arena::~Arena() {
-    reset();
-    for (Chunk &c : chunks_) std::free(c.base);
-}
+Arena::~Arena() { release(); }
 
 void Arena::addChunk(size_t min_bytes) {
     const size_t cap = min_bytes > chunk_bytes_ ? min_bytes : chunk_bytes_;
@@ -50,13 +49,22 @@ void Arena::reset() {
     /* Destroy in reverse order of construction, so a widget's children outlive
      * it the same way they would with ordinary scoping. */
     for (size_t i = tracked_.size(); i > 0; i--) {
-        tracked_[i - 1]->~ArenaObject();
+        tracked_[i - 1]->~Widget();
     }
     tracked_.clear();
 
     for (Chunk &c : chunks_) c.offset = 0;
     chunk_index_ = 0;
     used_ = 0;
+}
+
+void Arena::release() {
+    reset();
+    for (Chunk &c : chunks_) std::free(c.base);
+    /* Swapped out rather than cleared: clear() would keep the capacity, and the
+     * point of this is to hand everything back. */
+    std::vector<Chunk>().swap(chunks_);
+    std::vector<Widget *>().swap(tracked_);
 }
 
 bool Arena::owns(const void *p) const {
@@ -77,6 +85,16 @@ void BuildArenas::beginBuild() {
     current_ = (current_ == &a_) ? &b_ : &a_;
     current_->reset();
     Arena::setCurrent(current_);
+}
+
+void BuildArenas::release() {
+    if (Arena::current() == &a_ || Arena::current() == &b_) Arena::setCurrent(nullptr);
+
+    /* The newer build first, then the older one: across the two, that is still
+     * the reverse of the order the widgets were made in. */
+    Arena &older = current_ == &a_ ? b_ : a_;
+    current_->release();
+    older.release();
 }
 
 }  // namespace fmsui

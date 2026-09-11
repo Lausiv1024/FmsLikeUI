@@ -2,6 +2,11 @@
 
 /* Bump allocator for the throwaway Widget tree.
  *
+ * Internal to the library.  This header is not under include/, and the
+ * directory it is in is given only to fmsui's own sources and its unit test, so
+ * an application cannot include it.  What an application sees of the arena is
+ * its effect -- `new Column{...}` inside build() -- which widget.h declares.
+ *
  * A build pass creates every Widget from scratch and then drops the lot, so the
  * allocator only ever needs to hand out memory and, once, give it all back.
  * `new Column{...}` inside build() therefore costs a pointer increment, and
@@ -19,12 +24,7 @@
 
 namespace fmsui {
 
-/* Anything the arena has to destroy (rather than just forget) derives from this
- * -- Widgets do, because they hold std::function callbacks. */
-class ArenaObject {
-public:
-    virtual ~ArenaObject() = default;
-};
+class Widget;
 
 class Arena {
 public:
@@ -36,12 +36,21 @@ public:
 
     void *allocate(size_t bytes, size_t align);
 
-    /* Objects registered here get their destructor run on reset(). */
-    void track(ArenaObject *obj) { tracked_.push_back(obj); }
+    /* Widgets registered here get their virtual destructor run on reset().
+     *
+     * Widget is named directly rather than through a base class of the arena's
+     * own. Widgets are the only thing it has to destroy (they hold std::function
+     * callbacks), and a public base that existed for this alone would put the
+     * arena into every application's view of Widget. */
+    void track(Widget *w) { tracked_.push_back(w); }
 
     /* Destroy everything and rewind to empty.  Chunks are kept for reuse, so a
      * steady-state UI stops calling malloc entirely after the first few frames. */
     void reset();
+
+    /* reset(), and give the chunks back to the heap as well.  For the end of a
+     * session, not for between builds. */
+    void release();
 
     bool owns(const void *p) const;
 
@@ -76,7 +85,7 @@ private:
     void addChunk(size_t min_bytes);
 
     std::vector<Chunk> chunks_;
-    std::vector<ArenaObject *> tracked_;
+    std::vector<Widget *> tracked_;
     size_t chunk_bytes_;
     size_t chunk_index_ = 0;
     size_t used_ = 0;
@@ -91,6 +100,14 @@ public:
     /* Switch to the other arena and clear it.  What it held was two builds ago
      * and is unreachable; what the *previous* build produced is untouched. */
     void beginBuild();
+
+    /* Destroy both builds' widgets and free both arenas' chunks.
+     *
+     * FmsApp::shutdown() calls this once the element tree -- the last thing that
+     * reads those widgets -- is gone.  Arena::current() is cleared if it was one
+     * of these two, so a Widget made after this asserts rather than quietly
+     * starting a chunk that nothing will ever reset. */
+    void release();
 
     Arena &current() { return *current_; }
     const Arena &front() const { return *current_; }

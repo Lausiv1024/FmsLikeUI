@@ -2,6 +2,10 @@
 
 /* The Element layer: the persistent tree that survives rebuilds.
  *
+ * Internal to the library, like arena.h next to it.  An application meets an
+ * Element only as the opaque BuildContext its build() is handed; everything
+ * below is the framework's to change.
+ *
  * Widgets are thrown away every frame; Elements are not.  An Element keeps its
  * State and its RenderObject alive as long as the widget it reconciles against
  * keeps the same type and key, which is what makes `setState` preserve a text
@@ -23,28 +27,11 @@
 #include <cstdint>
 #include <vector>
 
+#include "fmsui/app.h"
 #include "fmsui/render.h"
 #include "fmsui/widget.h"
 
 namespace fmsui {
-
-/* Whoever is running right now, as a number we only ever compare.
- *
- * `std::this_thread::get_id()` is what this used to be, and it cannot be used
- * here: on ESP-IDF it goes through pthread_self(), which asserts outright when
- * it is called from a FreeRTOS task that was not created as a pthread -- and the
- * task esp_lvgl_port creates to run the frame loop is exactly that. The board
- * rebooted on the first frame.
- *
- * So the platform supplies the identity, the way it already supplies the
- * microsecond clock. Install one before the first frame:
- *
- *     device:   (ThreadId)xTaskGetCurrentTaskHandle()
- *     host/sim: std::hash<std::thread::id>{}(std::this_thread::get_id())
- *
- * With none installed the check is simply off. */
-using ThreadId = uintptr_t;
-using ThreadIdFn = ThreadId (*)();
 
 /* Owns the "something changed" flag, and knows which thread is allowed to touch
  * the tree.
@@ -77,7 +64,8 @@ public:
 
     /* How to ask who is running. Null -- the default -- turns the check off
      * rather than guessing, because a wrong answer here would abort a running
-     * aircraft display over a diagnostic. FmsApp::setThreadId() is the way in. */
+     * aircraft display over a diagnostic. FmsApp::setThreadId() is the way in;
+     * ThreadId in app.h says why the platform has to supply it. */
     static void setThreadIdFn(ThreadIdFn fn) { thread_id_fn_ = fn; }
 
     /* Remember the thread the frame loop runs on, so that mutating the tree from
@@ -100,13 +88,28 @@ private:
     bool bound_ = false;
 };
 
-class Element {
+/* The definition behind the BuildContext that widget.h only declares.
+ *
+ * Empty, and a base of Element and of nothing else, so the context build() is
+ * handed is always an Element and Element::of() can take it back.  An
+ * application holds references to it and passes them on; it cannot make one,
+ * copy one or look inside one. */
+class BuildContext {
+protected:
+    BuildContext() = default;
+    ~BuildContext() = default;
+};
+
+class Element : public BuildContext {
 public:
     explicit Element(const Widget *w);
     virtual ~Element();
 
     Element(const Element &) = delete;
     Element &operator=(const Element &) = delete;
+
+    /* The Element a BuildContext is. */
+    static Element &of(BuildContext &ctx) { return static_cast<Element &>(ctx); }
 
     virtual void mount(Element *parent, BuildOwner *owner);
     virtual void update(const Widget *w);

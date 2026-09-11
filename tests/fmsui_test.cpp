@@ -20,6 +20,12 @@
 
 #include "fmsui/fmsui.h"
 
+/* The library's internal headers. This test drives the arena and the element
+ * tree directly, so sim/CMakeLists.txt gives it src/internal/; no other target
+ * outside components/fmsui is. */
+#include "fmsui/arena.h"
+#include "fmsui/element.h"
+
 using namespace fmsui;
 
 namespace {
@@ -1447,6 +1453,144 @@ void test_arena_resets_between_builds() {
     Arena::setCurrent(nullptr);
 }
 
+/* A widget that reports its own destruction: which one, and in what order. */
+std::vector<int> g_widget_deaths;
+int g_live_tracers = 0;
+
+class Tracer : public StatelessWidget {
+public:
+    explicit Tracer(int id, Widget *child = nullptr, VoidCallback callback = {})
+        : callback(std::move(callback)), id_(id), child_(child) {
+        g_live_tracers++;
+    }
+    ~Tracer() override {
+        g_live_tracers--;
+        g_widget_deaths.push_back(id_);
+    }
+    FMSUI_WIDGET(Tracer)
+
+    Widget *build(BuildContext &ctx) const override {
+        (void)ctx;
+        return child_;
+    }
+
+    VoidCallback callback;
+
+private:
+    int id_;
+    Widget *child_;
+};
+
+void test_the_arena_destroys_each_widget_once_newest_first() {
+    std::printf("arena: reset runs each widget's destructor once, newest first\n");
+
+    g_widget_deaths.clear();
+    g_live_tracers = 0;
+
+    Arena a;
+    Arena::setCurrent(&a);
+
+    (void)new Tracer(1);
+    (void)new Tracer(2);
+    (void)new Tracer(3);
+    CHECK(g_live_tracers == 3);
+
+    /* Through Widget's virtual destructor: the arena only knows them as Widgets. */
+    a.reset();
+    CHECK(g_live_tracers == 0);
+    CHECK(g_widget_deaths == std::vector<int>({3, 2, 1}));
+
+    a.reset();
+    a.release();
+    CHECK(g_widget_deaths.size() == 3);  // nothing destroyed a second time
+
+    Arena::setCurrent(nullptr);
+}
+
+void test_a_build_lives_until_the_one_after_next() {
+    std::printf("arena: a build's widgets outlive the next build and go with the one after\n");
+
+    g_widget_deaths.clear();
+    g_live_tracers = 0;
+
+    BuildArenas arenas;
+    int calls = 0;
+
+    arenas.beginBuild();
+    auto *first = new Tracer(1, nullptr, [&calls] { calls++; });
+
+    /* While the second build is being made, the first one is whole: what it
+     * captured can still be called, the way a tap handler from the last frame
+     * is. */
+    arenas.beginBuild();
+    (void)new Tracer(2);
+    CHECK(g_widget_deaths.empty());
+    CHECK(g_live_tracers == 2);
+    first->callback();
+    CHECK(calls == 1);
+
+    /* The third build takes the first one's arena back, and only that one. */
+    arenas.beginBuild();
+    (void)new Tracer(3);
+    CHECK(g_widget_deaths == std::vector<int>({1}));
+    CHECK(g_live_tracers == 2);
+
+    arenas.beginBuild();
+    CHECK(g_widget_deaths == std::vector<int>({1, 2}));
+    CHECK(g_live_tracers == 1);
+
+    arenas.release();
+    CHECK(g_widget_deaths == std::vector<int>({1, 2, 3}));
+    CHECK(g_live_tracers == 0);
+    CHECK(Arena::current() == nullptr);
+}
+
+void test_shutdown_releases_the_tree_and_both_arenas_and_init_works_again() {
+    std::printf("app: shutdown releases the tree and both arenas, and init works again\n");
+
+    releaseStyleCache();
+    lv_display_t *disp = headlessDisplay();
+    lv_obj_t *screen = lv_display_get_screen_active(disp);
+    FmsApp &app = FmsApp::instance();
+
+    g_widget_deaths.clear();
+    g_live_tracers = 0;
+    resetCounters();
+
+    int next_id = 0;
+    const auto builder = [&next_id] {
+        return new Tracer(++next_id, new Column{{.children = {new Counter(5),
+                                                              new Text{{.text = "LIVE"}}}}});
+    };
+    const auto frame = [&app] {
+        app.requestFrame();
+        lv_tick_inc(10);
+        lv_timer_handler();
+    };
+
+    /* The same process, twice over: whatever the first session leaves behind
+     * shows up in the second one's numbers. */
+    for (int round = 1; round <= 2; round++) {
+        app.init(disp, builder);
+        frame();
+        frame();
+        frame();
+
+        /* Three builds in: the first is gone, the last two are in the arenas. */
+        CHECK(g_live_tracers == 2);
+        CHECK(g_state_constructions == round);
+        CHECK(g_state_disposals == round - 1);
+        CHECK(lv_obj_get_child_count(screen) == 2);
+
+        app.shutdown();
+        CHECK(g_state_disposals == round);          // the element tree
+        CHECK(lv_obj_get_child_count(screen) == 0);  // ...and every lv_obj it made
+        CHECK(g_live_tracers == 0);                  // both arenas' widgets
+        CHECK(Arena::current() == nullptr);
+        CHECK(styleCacheStats().text_styles == 0);
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -1499,6 +1643,9 @@ int main() {
     test_the_frame_thread_is_recorded();
     test_the_isr_requester_sets_the_same_flag();
     test_arena_resets_between_builds();
+    test_the_arena_destroys_each_widget_once_newest_first();
+    test_a_build_lives_until_the_one_after_next();
+    test_shutdown_releases_the_tree_and_both_arenas_and_init_works_again();
 
     /* Every element built above has been unmounted and deleted, so the objects
      * that held these styles are gone and it is safe -- and, for a sanitizer

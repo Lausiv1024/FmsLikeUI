@@ -15,12 +15,11 @@
 
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
-#include <mutex>
 
 #include "lvgl.h"
 
-#include "fmsui/element.h"
 #include "fmsui/foundation.h"
 #include "fmsui/widget.h"
 
@@ -98,9 +97,36 @@ private:
     std::atomic<bool> *flag_ = nullptr;
 };
 
+/* Whoever is running right now, as a number the framework only ever compares.
+ *
+ * `std::this_thread::get_id()` is what this used to be, and it cannot be used
+ * here: on ESP-IDF it goes through pthread_self(), which asserts outright when
+ * it is called from a FreeRTOS task that was not created as a pthread -- and the
+ * task esp_lvgl_port creates to run the frame loop is exactly that. The board
+ * rebooted on the first frame.
+ *
+ * So the platform supplies the identity, the way it already supplies the
+ * microsecond clock. Install one with FmsApp::setThreadId() before the first
+ * frame:
+ *
+ *     device:   (ThreadId)xTaskGetCurrentTaskHandle()
+ *     host/sim: std::hash<std::thread::id>{}(std::this_thread::get_id())
+ *
+ * With none installed the check is simply off. */
+using ThreadId = uintptr_t;
+using ThreadIdFn = ThreadId (*)();
+
+/* The app: one per process.
+ *
+ * It holds no state of its own. The arenas, the element tree, the frame timer
+ * and the published stats all belong to the library, in app.cpp, so that none
+ * of their types has to appear in this header. */
 class FmsApp {
 public:
     static FmsApp &instance();
+
+    FmsApp(const FmsApp &) = delete;
+    FmsApp &operator=(const FmsApp &) = delete;
 
     /* `builder` is called on every rebuild and must return a fresh widget tree.
      * It runs inside a build pass, so `new` inside it hits the arena. */
@@ -130,25 +156,27 @@ public:
      *
      * What you must NOT do is reach into a State from another task. setState()
      * runs your mutation immediately, on the calling task, racing the build. */
-    void requestFrame() { owner_.scheduleBuild(); }
+    void requestFrame();
 
     /* A requester that can be poked from an IRAM interrupt handler. Fetch it
      * during setup; see FrameRequester. */
-    FrameRequester requester() { return FrameRequester(owner_.dirtyFlag()); }
+    FrameRequester requester();
 
-    Size screenSize() const { return screen_; }
+    Size screenSize() const;
 
     /* The last completed frame, as a consistent copy. Safe to call from any
      * task; see FrameStats for why it is a copy. */
     FrameStats stats() const;
 
     /* Tear the app down: stop the frame timer, destroy the element tree -- which
-     * destroys every lv_obj it made -- and only then release the shared styles,
-     * which those objects were pointing at.
+     * destroys every lv_obj it made -- then the widgets the last two builds left
+     * in the arenas, and only then release the shared styles, which those
+     * objects were pointing at.
      *
      * The device never calls this; the app is the process. The simulator and the
      * tests do, so that a run ends with nothing outstanding and LeakSanitizer
-     * has nothing of ours to report. Safe on an app that was never init()ed. */
+     * has nothing of ours to report. Safe on an app that was never init()ed, and
+     * init() may be called again afterwards. */
     void shutdown();
 
     void setBackground(Color c);
@@ -158,37 +186,17 @@ public:
      * (esp_timer_get_time on the device, steady_clock in the simulator) so the
      * M5 profiling numbers mean something. */
     using MicrosClock = uint32_t (*)();
-    void setClock(MicrosClock clock) { clock_ = clock; }
+    void setClock(MicrosClock clock);
 
     /* How to ask which thread is running, so that setState() from the wrong one
      * can be caught rather than corrupting the arena in the background. Install
-     * it before the first frame; see ThreadId in element.h for why the framework
-     * cannot work this out for itself. Without it the check is off and nothing
-     * else changes. */
-    void setThreadId(ThreadIdFn fn) { BuildOwner::setThreadIdFn(fn); }
+     * it before the first frame; see ThreadId above for why the framework cannot
+     * work this out for itself. Without it the check is off and nothing else
+     * changes. */
+    void setThreadId(ThreadIdFn fn);
 
 private:
-    void frame();
-    static void timerCb(lv_timer_t *t);
-
-    BuildArenas arenas_;
-    BuildOwner owner_;
-    WidgetBuilder builder_;
-    Element *root_ = nullptr;
-    lv_obj_t *lv_root_ = nullptr;
-    lv_display_t *display_ = nullptr;
-    lv_timer_t *timer_ = nullptr;
-    Size screen_{};
-    MicrosClock clock_ = nullptr;
-
-    /* The running build count belongs to the frame loop alone -- it is not
-     * incremented under the lock, only copied into the frame that carries it. */
-    uint32_t builds_ = 0;
-
-    /* Guards nothing but the copy below. No build, layout, paint or logging
-     * happens inside it. */
-    mutable std::mutex stats_mutex_;
-    FrameStats stats_{};
+    FmsApp() = default;
 };
 
 /* Convenience: FmsApp::instance().init(lv_display_get_default(), builder). */
