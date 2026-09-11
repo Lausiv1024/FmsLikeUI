@@ -813,11 +813,9 @@ bash tools/ci/device_build.sh build-ci ci-out/device
 - README には、CI の節、`tools/ci/` の行、実機節に lock での依存固定と更新手順の段落を追加した。DESIGN.md は変えていない。
 - job summary の文言は英語にした。
 
-## レビュー待ち
-
 ### 2026-09-11: 外部利用契約と consumer smoke test
 
-**状態: レビュー待ち (2026-09-11)。実装とローカル検証の結果は末尾の「実装の結果」。完了条件のチェックはレビューで行う。**
+**状態: 実装済み (2026-09-11)。完了条件 8 件をレビューで確認済み。**
 
 現在のCIは、このリポジトリのルートからシミュレータ、テスト、デモ、ESP32-P4向けアプリを
 ビルドする経路を検証している。一方、主成果物はFMSアプリケーションではなくUIフレームワークなので、
@@ -897,14 +895,31 @@ consumerの失敗を既存デモや既存アプリの成功で隠さない。
 
 #### 実装完了の条件
 
-- [ ] 通常CMakeの独立consumerが、ルートCMakeやデモに依存せずconfigure、build、実行できる。
-- [ ] ESP-IDFの独立consumerが、既存`main/`やBSPに依存せずESP32-P4向けにリンクできる。
-- [ ] consumerが`<fmsui/fmsui.h>`だけから独自のStatefulWidgetとWidget treeを定義できる。
-- [ ] 通常利用向けの各公開ヘッダーが、暗黙のinclude順序に依存せず単独でコンパイルできる。
-- [ ] `fmsui`本体が`fmsui_fonts`へ必須依存せず、consumer側のフォント選択で動く。
-- [ ] 導入、所有範囲、ライフサイクル、thread境界、確認済みバージョンが`docs/USING.md`に記録される。
-- [ ] hostとESP-IDFのconsumer検証がCIに入り、既存の内部テストとは別の失敗として判別できる。
-- [ ] 既存3件のCTest、6デモのheadless描画、6構成のdevice-buildに回帰がない。
+- [x] 通常CMakeの独立consumerが、ルートCMakeやデモに依存せずconfigure、build、実行できる。
+- [x] ESP-IDFの独立consumerが、既存`main/`やBSPに依存せずESP32-P4向けにリンクできる。
+- [x] consumerが`<fmsui/fmsui.h>`だけから独自のStatefulWidgetとWidget treeを定義できる。
+- [x] 通常利用向けの各公開ヘッダーが、暗黙のinclude順序に依存せず単独でコンパイルできる。
+- [x] `fmsui`本体が`fmsui_fonts`へ必須依存せず、consumer側のフォント選択で動く。
+- [x] 導入、所有範囲、ライフサイクル、thread境界、確認済みバージョンが`docs/USING.md`に記録される。
+- [x] hostとESP-IDFのconsumer検証がCIに入り、既存の内部テストとは別の失敗として判別できる。
+- [x] 既存3件のCTest、6デモのheadless描画、6構成のdevice-buildに回帰がない。
+
+#### レビュー結果
+
+2026-09-11 のレビューで、実装に未解決の指摘は無かった。
+
+- 必要なファイルだけを置いた新しい一時ツリーからhost consumerをconfigure・build・実行し、CTest 1/1と
+  10 checksが成功した。通常利用向け7ヘッダーと入口の`fmsui.h`も、それぞれ単独の翻訳単位として
+  `-Werror`付きでコンパイルされた。
+- 既存の通常ビルドとASan / UBSanビルドを再構成・再ビルドし、両方でCTest 3/3と6デモを再実行して成功した。
+  sanitizer側は`fmsui` 8/8ソースの計装と、CTestログにsanitizer報告が無いことも再確認した。
+- `tools/ci/*.sh`はshellcheckで指摘0件。`check_consumer_components.py`は構文検査に成功し、
+  `14058ee..2c7e5b3`の`git diff --check`にも問題は無かった。
+- ESP-IDF consumer、既存6構成のdevice-build、GitHub上の5 jobについては、このレビューでは再実行せず、
+  下記の固定ESP-IDF環境によるローカル結果とGitHub-hosted run #5の成功記録、および実装内容を照合して判定した。
+- 実装記録にhost consumerを「11 checks」とする数え間違いが3か所あった。実行ファイルの出力と
+  `check()`呼び出しは10件で一致し、計画が要求したbuild / paint、`requestFrame()`、`setState()`、
+  利用側フォント、`shutdown()`はすべて含むため、数値だけを10へ訂正した。
 
 #### 計画時に確認して決めたこと
 
@@ -921,7 +936,7 @@ consumerの失敗を既存デモや既存アプリの成功で隠さない。
 | 最小 Widget tree | `consumers/shared/` の `ConsumerPage`。独自の `StatefulWidget`(タップ回数を `setState()` で更新)、他タスクが公開する `std::atomic<uint32_t>`、`FmsTheme`、`Column` / `Text` と `FmsLabel` / `FmsButton`。フレームワークは `<fmsui/fmsui.h>` だけから使う |
 | LVGL の用意 | 利用側がリポジトリの `third_party/lvgl` (v9.5.0) と `third_party/lv_conf.h` を取り込む。host は `add_subdirectory()` と `LV_BUILD_CONF_PATH`、ESP-IDF は `EXTRA_COMPONENT_DIRS` に `components/fmsui` と `third_party/lvgl` を個別に並べ、`LV_KCONFIG_IGNORE` を付ける |
 | 依存しないことの保証 | `tools/ci/stage_consumer.sh` が `components/fmsui`、`third_party/lv_conf.h`、`third_party/lvgl`、`consumers/` だけを別ディレクトリへ写し、consumer はそこから configure する。ルートの `CMakeLists.txt`、`sdkconfig.defaults`、`dependencies.lock`、`main/`、`demo/`、`sim/`、`tests/`、`tools/`、`components/fmsui_fonts` はツリーに存在しない |
-| host consumer の実行内容 | `consumers/host/main.cpp`。480x320 の headless display、pointer indev、tick、フォントを利用側で持ち、(1) `runApp()` の初回ビルドと描画、(2) 別スレッドの公開 → `requestFrame()` が次フレームで表示に届き、その後ビルドしない、(3) `FmsButton` のタップが `setState()` を通る、(4) 全ラベルがテーマに渡したフォント、(5) `shutdown()` 後に screen の子が 0、の 11 checks。CTest に `TIMEOUT 60` で登録 |
+| host consumer の実行内容 | `consumers/host/main.cpp`。480x320 の headless display、pointer indev、tick、フォントを利用側で持ち、(1) `runApp()` の初回ビルドと描画、(2) 別スレッドの公開 → `requestFrame()` が次フレームで表示に届き、その後ビルドしない、(3) `FmsButton` のタップが `setState()` を通る、(4) 全ラベルがテーマに渡したフォント、(5) `shutdown()` 後に screen の子が 0、の 10 checks。CTest に `TIMEOUT 60` で登録 |
 | フォント | host は `LV_FONT_DEFAULT` を別アドレスへコピーした `lv_font_t` をテーマに渡し、ラベルのフォントがそのアドレスであることを判定する(フォールバックの `LV_FONT_DEFAULT` と区別するため)。ESP-IDF は `LV_FONT_DEFAULT` をそのまま渡す。どちらも `fmsui_fonts` をビルドに含めない |
 | ヘッダーの単独コンパイル | `consumers/host/CMakeLists.txt` が `header_check.cpp.in` から `app` / `foundation` / `widget` / `widgets` / `theme` / `fms` / `str` と入口の `fmsui` の 8 TU を生成し、OBJECT ライブラリとして `-Wall -Wextra`(CI では `-Werror` も)でコンパイルする |
 | ESP-IDF consumer | `consumers/esp-idf/`。ボードを持たない。`app_main` が LVGL の display をバッファだけで作り、同じページを `runApp()` し、別タスクが公開と `requestFrame()` を行う。`sdkconfig.defaults` はターゲット、LVGL Examples / Demos の無効化、main タスクのスタック 8192 だけ。ビルドのみで、実機では動かしていない |
@@ -948,7 +963,7 @@ consumerの失敗を既存デモや既存アプリの成功で隠さない。
 | 対象 | 結果 |
 |---|---|
 | actionlint 1.7.12 + shellcheck 0.11.0 | `ci.yml` はエラー 0 件。`tools/ci/*.sh`(新規 3 本を含む)への shellcheck も指摘 0 件 |
-| `consumer (host)` 相当 | `consumer_host.sh` が rc 0。ステージ・configure・ビルド (552 ステップ)・CTest で 23 秒、`warning:` 0 件。直接実行で 11 checks すべて ok。compile commands では consumer の 10 TU すべてに `-Werror` が付き、`fmsui` 8 ソースと LVGL 531 ソースには付いていない |
+| `consumer (host)` 相当 | `consumer_host.sh` が rc 0。ステージ・configure・ビルド (552 ステップ)・CTest で 23 秒、`warning:` 0 件。直接実行で 10 checks すべて ok。compile commands では consumer の 10 TU すべてに `-Werror` が付き、`fmsui` 8 ソースと LVGL 531 ソースには付いていない |
 | `consumer (esp-idf, esp32p4)` 相当 | `espressif/idf:v5.5.4@sha256:b9f2d6ea…` で `consumer_idf.sh` が rc 0。単独実行で 101 秒、1598 ステップ、`warning:` 0 件。`fmsui_consumer.bin` 600,720 bytes、最小 app 領域 1,048,576 bytes に対して空き 447,856 bytes (43%)。ビルドに入った component は 108 個で、`fmsui` と `lvgl` はステージしたツリーから、`fmsui_fonts` / `m5stack_tab5` / `esp_lvgl_port` / managed component は 0 |
 | USING.md のコード例 | 「最小の Widget tree」の例を、起動部分だけ関数で包んで `-std=c++20 -Wall -Wextra -Werror -fsyntax-only` でコンパイルし、成功した |
 | 既存 `host (debug)` 相当 | 561 ステップ、`warning:` 0 件。CTest 3/3 成功、6 デモ成功 |
@@ -999,7 +1014,7 @@ D1〜D4 はすべて元に戻した後、再ビルドと component 検査が再�
 | 対象 | 結果 |
 |---|---|
 | `third_party/lv_conf.h` | `tools/gen_lv_conf.py` で再生成し、差分は `LV_USE_SDL` の 5 行だけ |
-| `consumer (host)` 相当 | rc 0、20 秒、`warning:` 0 件、11 checks すべて ok。`ninja -t deps` で SDL2 のヘッダーに依存するオブジェクトの行は 0、compile commands に `-DLV_USE_SDL` は 0 件 |
+| `consumer (host)` 相当 | rc 0、20 秒、`warning:` 0 件、10 checks すべて ok。`ninja -t deps` で SDL2 のヘッダーに依存するオブジェクトの行は 0、compile commands に `-DLV_USE_SDL` は 0 件 |
 | `host (debug)` 相当 | `warning:` 0 件。`ninja -t deps` の SDL2 ヘッダー行は 300 で、LVGL 531、`components/` 13、`demo/` 6、`sim/` 1、`tests/` 3 の全 TU に `-DLV_USE_SDL=1` が付く。CTest 3/3 成功。6 デモの PNG は変更前のスナップショットで撮ったものと 6 枚ともバイト一致 |
 | `host (asan-ubsan)` 相当 | `warning:` 0 件、`fmsui` 8/8 ソースが計装済み、CTest 3/3 成功、sanitizer の報告 0 件。6 デモの PNG は変更前と 6 枚ともバイト一致 |
 | `device-build (esp32p4)` 相当 | `device_build.sh` rc 0(229 秒)。6 構成とも `warning:` 0 件、bin サイズは 6 構成とも変更前と同じ、コンパイル対象 1594 件、Examples / Demos 0 / 0 件、lock 不変。compile commands に `LV_USE_SDL` は 0 件 |
@@ -1056,6 +1071,10 @@ bash tools/ci/consumer_idf.sh ci-out/consumer-idf
 - host consumer の job では SDL2 を入れない。
 - 既存 job と同じく、検査は `tools/ci/` のスクリプトにし、workflow にはインラインで書かなかった。job summary の文言は英語にした。
 - `/ci-out/`、`/consumers/*/build*/`、`/consumers/esp-idf/dependencies.lock` を `.gitignore` に加えた。
+
+## レビュー待ち
+
+いまのところ無し。
 
 ## 計画中・未実装
 
