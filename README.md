@@ -1,5 +1,7 @@
 # FmsLikeUI
 
+[![CI](https://github.com/Lausiv1024/FmsLikeUI/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/Lausiv1024/FmsLikeUI/actions/workflows/ci.yml)
+
 M5Stack Tab5 (ESP32-P4) 向けの、Airbus FMS 風デザインの宣言的 UI フレームワーク。
 
 Flutter と同じ 3 層(Widget → Element → RenderObject)と制約ベースのレイアウトを C++20 で実装し、

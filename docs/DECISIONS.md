@@ -553,7 +553,7 @@ REM m1 / catalog / fplan / reorder と、既定 (-DFMSUI_DEMO=) も同じ
 
 ### 2026-09-11: GitHub Actions による継続的インテグレーション
 
-**状態: レビュー待ち (2026-09-11)。実装とローカル検証まで済み。GitHub-hosted run の結果は push 後に下の「GitHub-hosted run」へ記録する。完了条件の判定はレビューで行う。**
+**状態: レビュー待ち (2026-09-11)。実装、ローカル検証、GitHub-hosted run の成功と README の badge まで済み。完了条件の判定はレビューで行う。**
 
 ローカルでは通常・sanitizer・実機向けのビルドとテストが揃ったが、変更のたびに人がすべてを
 再実行しなければ回帰を検出できない。GitHub Actions で同じ品質ゲートを再現し、pull request では
@@ -736,7 +736,30 @@ device-build の bin サイズ(手元の lock、最小 app 領域はどれも 1,
 
 **GitHub-hosted run**
 
-このコミットを push した後の run で記録する。badge も、その run の成功を確認してから README に追加する。
+最初の run は、`552299e` の push による
+[run #1 (34549917868)](https://github.com/Lausiv1024/FmsLikeUI/actions/runs/34549917868) で、
+2026-09-11 01:15〜01:24 UTC に実行された。3 job とも success で、run 全体は 558 秒。
+失敗が無かったので、失敗時の artifact は作られていない(3 job とも「Upload failure evidence」は skipped)。
+
+| job | 結果 | 所要時間 | 内訳 |
+|---|---|---:|---|
+| `host (debug)` | success | 111 s | 依存導入 45 s、ビルド 40 s (561/561)、CTest 3/3 成功 (0.21 s)、6 デモ成功 |
+| `host (asan-ubsan)` | success | 99 s | 依存導入 38 s、ビルド 39 s (561/561)、`fmsui` 8/8 ソースが計装済み、CTest 3/3 成功 (0.40 s)、6 デモ成功 |
+| `device-build (esp32p4)` | success | 554 s | コンテナの初期化(イメージの pull を含む)105 s、checkout 12 s、6 構成のビルド 434 s |
+
+- ホスト job の環境: runner image `ubuntu-22.04` 20260907.292.1、CMake 3.31.6(ローカルの 3.22.1 より新しい)、
+  gcc 11.4.0、`ninja-build` 1.10.1、`libsdl2-dev` 2.0.20。
+- device job が pull したイメージの digest は、固定した `sha256:b9f2d6ea…` と一致した。
+  コンパイル対象は 1594 件、Examples / Demos は 0 / 0 件。6 構成の bin サイズは、上の表のローカル再現と同じ値だった
+  (既定 0xdd650 = 906,832 bytes / 空き 41% など)。
+- 3 job のログのどれにも `warning:` の行は無く、device job のログには `::error::` も無い。
+  lock が書き換わっていれば `device_build.sh` がエラーを出して job を失敗にするので、コミットした lock のままビルドされている。
+- job summary の中身は REST API では取得できないため、ここに書いた値はジョブログから取った。
+  サイズは `check_sizes.py` の出力、コンパイル対象の内訳は `check_lvgl_sources.py` の出力による。
+- run の成功を確認した後で、README の先頭に badge を追加した。
+
+GitHub 上でまだ通していない経路: `pull_request` と `workflow_dispatch` による起動、`concurrency` によるキャンセル、
+timeout による停止、失敗時の artifact の保存。検出の仕組みそのものは、上のミューテーションでローカルに確認した。
 
 **検証コマンド**
 
