@@ -929,10 +929,14 @@ consumerの失敗を既存デモや既存アプリの成功で隠さない。
 | 警告 | host は consumer 自身の target(2 ソース + 8 ヘッダー TU)に `FMSUI_WERROR=ON` で `-Werror`。`fmsui` のソースは既存 host job が同じコンパイラで `-Werror` 済みなので、ここでは付けない。ESP-IDF は `FMSUI_WERROR=ON` で `fmsui` と consumer の `main` に `FMSUI_WERROR_FLAGS` を付ける |
 | CI | `consumer (host)`(pull request / `master` push / 手動、timeout 30 分)と `consumer (esp-idf, esp32p4)`(`master` push / 手動、timeout 60 分、device-build と同じ digest のイメージ)を独立 job として追加。host 側は `ninja-build` だけを入れ、SDL2 は入れない。失敗時だけ 7 日の artifact を残す。ESP-IDF 側は bin サイズと component 検査を job summary に出す |
 | 文書 | `docs/USING.md` を追加。README に USING.md への導線、CI の 2 job、`consumers/` の行を追加。DESIGN.md は変えていない |
-| フレームワーク本体 | 変更なし。通常利用向けの 7 ヘッダーは実装前の時点ですでに単独でコンパイルできた(gcc 11.4 で 12 ヘッダーすべてを確認) |
+| フレームワーク本体 | ソースとヘッダーは変更なし。通常利用向けの 7 ヘッダーは実装前の時点ですでに単独でコンパイルできた(gcc 11.4 で 12 ヘッダーすべてを確認) |
+| LVGL の SDL ドライバ | GitHub の最初の run で見つかった依存(下記)を外した。`tools/gen_lv_conf.py` の `LV_USE_SDL` を「`#ifndef LV_USE_SDL` なら 0」に変えて `third_party/lv_conf.h` を再生成し、`sim/CMakeLists.txt` が `lvgl` target に `LV_USE_SDL=1` を PUBLIC で渡す。実機は以前と同じく 0 |
 
 **実装して分かった利用契約上の事実**
 
+- 変更前の同梱 `lv_conf.h` は `ESP_PLATFORM` 以外で `LV_USE_SDL 1` だったため、ホストで LVGL をビルドするだけで
+  `SDL2/SDL.h` が必要だった(リンクは不要)。WSL には SDL2 が入っていたのでローカル検証では見えず、SDL2 を入れない
+  `consumer (host)` job が GitHub で初めて検出した。確認のうえ、SDL をシミュレータ側の opt-in に変えた。
 - `fmsui` の ESP-IDF 用 `CMakeLists.txt` は、`FMSUI_WERROR` と `FMSUI_WERROR_FLAGS` を**取り込んだプロジェクト側の変数**として読む。どちらも設定しないプロジェクトでは ESP-IDF 既定の警告方針でビルドされるだけなので、外部利用の妨げにはならない。consumer は同じ 6 フラグの一覧を自分の `CMakeLists.txt` に持ち、その理由をコメントに書いた。
 - ESP-IDF で `EXTRA_COMPONENT_DIRS` に `components/` 全体を指定すると、どこからも `REQUIRES` されていない `fmsui_fonts` までビルドに入る(ミューテーション D4 で確認)。USING.md に「`components/fmsui` を個別に書く」と記載した。
 - component manager は、managed component が無くても consumer のプロジェクト直下に `dependencies.lock`(中身は ESP-IDF の版だけ)を作る。ESP-IDF の版で変わるだけのファイルなので、`/consumers/esp-idf/dependencies.lock` を `.gitignore` に入れた。ステージングでも写さない。
@@ -969,6 +973,38 @@ consumerの失敗を既存デモや既存アプリの成功で隠さない。
 
 D1〜D4 はすべて元に戻した後、再ビルドと component 検査が再び成功することを確認した。
 
+**GitHub-hosted run #4: `consumer (host)` だけが失敗**
+
+`556e341` の push による
+[run #4 (34556079180)](https://github.com/Lausiv1024/FmsLikeUI/actions/runs/34556079180)
+(2026-09-11 02:49〜02:58 UTC)。
+
+| job | 結果 | 所要時間 | 内訳 |
+|---|---|---:|---|
+| `host (debug)` | success | 97 s | CTest 3/3 成功、6 デモ成功 |
+| `host (asan-ubsan)` | success | 90 s | `fmsui` 8/8 ソースが計装済み、CTest 3/3 成功、6 デモ成功 |
+| `consumer (host)` | **failure** | 60 s | 依存導入 31 s。ステージ後のビルド 11 秒目に、LVGL の `src/drivers/sdl/lv_sdl_*.c` 3 件が `third_party/lv_conf.h:1303: fatal error: SDL2/SDL.h: No such file or directory` で失敗。失敗時の artifact は保存された |
+| `device-build (esp32p4)` | success | 569 s | 6 構成の bin サイズは前章の表と同じ(既定 0xdd650 = 906,832 bytes / 空き 41% など) |
+| `consumer (esp-idf, esp32p4)` | success | 367 s | コンテナの初期化 99 s、ビルド 246 s。`warning:` 0 件、イメージ digest は `sha256:b9f2d6ea1c19…`。`fmsui_consumer.bin` 0x93220 = 602,656 bytes、空き 43% |
+
+- runner の CMake は 3.31.6、コンパイラは gcc 11.4.0。
+- ESP-IDF consumer の bin はローカル (600,720 bytes) より 1,936 bytes 大きい。device-build はローカルと同じサイズになる。
+  consumer は `fmsui` と LVGL がプロジェクトディレクトリの外にあり、ソースパスの埋め込みがビルド場所に左右されると考えられる
+  (GitHub のパス `/__w/FmsLikeUI/FmsLikeUI/ci-out/…` はローカルの `/w/ci-out/…` より 22 文字長く、22 × 88 = 1,936)。
+  中身の比較はしていないので、推定にとどめる。
+- ジョブのログは REST API の job logs(リダイレクト先を認証ヘッダーなしで取得)で読んだ。
+
+**SDL を opt-in にした後のローカル検証**(同じ環境で、新しいスナップショットから)
+
+| 対象 | 結果 |
+|---|---|
+| `third_party/lv_conf.h` | `tools/gen_lv_conf.py` で再生成し、差分は `LV_USE_SDL` の 5 行だけ |
+| `consumer (host)` 相当 | rc 0、20 秒、`warning:` 0 件、11 checks すべて ok。`ninja -t deps` で SDL2 のヘッダーに依存するオブジェクトの行は 0、compile commands に `-DLV_USE_SDL` は 0 件 |
+| `host (debug)` 相当 | `warning:` 0 件。`ninja -t deps` の SDL2 ヘッダー行は 300 で、LVGL 531、`components/` 13、`demo/` 6、`sim/` 1、`tests/` 3 の全 TU に `-DLV_USE_SDL=1` が付く。CTest 3/3 成功。6 デモの PNG は変更前のスナップショットで撮ったものと 6 枚ともバイト一致 |
+| `host (asan-ubsan)` 相当 | `warning:` 0 件、`fmsui` 8/8 ソースが計装済み、CTest 3/3 成功、sanitizer の報告 0 件。6 デモの PNG は変更前と 6 枚ともバイト一致 |
+| `device-build (esp32p4)` 相当 | `device_build.sh` rc 0(229 秒)。6 構成とも `warning:` 0 件、bin サイズは 6 構成とも変更前と同じ、コンパイル対象 1594 件、Examples / Demos 0 / 0 件、lock 不変。compile commands に `LV_USE_SDL` は 0 件 |
+| `consumer (esp-idf, esp32p4)` 相当 | `consumer_idf.sh` rc 0(81 秒)、`warning:` 0 件。`fmsui_consumer.bin` 600,720 bytes は変更前と同じ。component 検査も同じ結果 |
+
 **検証コマンド**
 
 ```bash
@@ -986,6 +1022,8 @@ bash tools/ci/consumer_idf.sh ci-out/consumer-idf
 - LVGL と `lv_conf.h` は、リポジトリの固定版 (`third_party/lvgl`、`third_party/lv_conf.h`) を consumer が取り込む。
 - ESP-IDF consumer の job は device-build と同じく `master` への push と手動実行だけで起動する。
 - ローカル検証の後にこちらで commit・push し、GitHub-hosted run の結果を記録してからレビュー待ちにする。
+- 同梱 `lv_conf.h` が SDL2 のヘッダーを要求する問題(run #4 で発見)は、consumer に SDL2 を入れたり consumer 専用の
+  `lv_conf.h` を置いたりせず、SDL をシミュレータ側の opt-in にして直す。
 
 **確認せずに決めたこと**
 

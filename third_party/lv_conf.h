@@ -1294,10 +1294,9 @@
  *==================*/
 
 /** Use SDL to open window on PC and handle mouse and keyboard. */
-#ifdef ESP_PLATFORM
+#ifndef LV_USE_SDL
+    /* Off unless the build turns it on: sim/CMakeLists.txt passes LV_USE_SDL=1. */
     #define LV_USE_SDL 0
-#else
-    #define LV_USE_SDL 1
 #endif
 #if LV_USE_SDL
     #define LV_SDL_INCLUDE_PATH     <SDL2/SDL.h>

@@ -56,6 +56,8 @@ add_executable(my_app main.cpp)
 target_link_libraries(my_app PRIVATE fmsui::fmsui lvgl::lvgl)
 ```
 
+- 同梱の `lv_conf.h` は LVGL の SDL ドライバを無効にしているので、SDL2 は要りません。
+  シミュレータ(`sim/`)だけが、`lvgl` target に `LV_USE_SDL=1` を渡して有効にしています。
 - `fmsui` は静的ライブラリで、`lvgl` を PUBLIC にリンクします。LVGL を別の方法で用意する場合も、
   `add_subdirectory(components/fmsui)` より前に `lvgl` という target を作っておいてください。
 - 動く全体は [`consumers/host/CMakeLists.txt`](../consumers/host/CMakeLists.txt) にあります。

@@ -72,11 +72,14 @@ DEFINES = {
         "        #define LV_LOG_PRINTF 1",
         "    #endif",
     ]),
+    # SDL is the simulator's window, mouse and keyboard, and nothing else wants
+    # it. Off unless the build defines LV_USE_SDL itself -- sim/CMakeLists.txt
+    # passes LV_USE_SDL=1 to LVGL -- so that an application building LVGL with
+    # this file on a PC does not need SDL2's headers. The device never sets it.
     "LV_USE_SDL": "\n".join([
-        "#ifdef ESP_PLATFORM",
+        "#ifndef LV_USE_SDL",
+        "    /* Off unless the build turns it on: sim/CMakeLists.txt passes LV_USE_SDL=1. */",
         "    #define LV_USE_SDL 0",
-        "#else",
-        "    #define LV_USE_SDL 1",
         "#endif",
     ]),
 }

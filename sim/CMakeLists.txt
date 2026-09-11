@@ -20,6 +20,12 @@ set(CONFIG_LV_BUILD_DEMOS OFF CACHE BOOL "" FORCE)
 set(CONFIG_LV_USE_THORVG_INTERNAL OFF CACHE BOOL "" FORCE)
 add_subdirectory(${REPO_ROOT}/third_party/lvgl ${CMAKE_BINARY_DIR}/lvgl)
 
+# The window, mouse and keyboard are LVGL's SDL driver.  The shared lv_conf.h
+# leaves it off, so that nothing else that builds LVGL with it needs SDL2's
+# headers (consumers/host is built without them).  PUBLIC, so every target here
+# that includes lvgl.h sees the same configuration LVGL was compiled with.
+target_compile_definitions(lvgl PUBLIC LV_USE_SDL=1)
+
 add_subdirectory(${REPO_ROOT}/components/fmsui ${CMAKE_BINARY_DIR}/fmsui)
 add_subdirectory(${REPO_ROOT}/components/fmsui_fonts ${CMAKE_BINARY_DIR}/fmsui_fonts)
 
