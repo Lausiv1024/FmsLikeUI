@@ -5,10 +5,14 @@
 
 sdkconfig
 sdkconfig.old
-managed_components/
-dependencies.lock
 compile_commands.json
 .vscode/ipch/
+
+# What the component manager downloads.  dependencies.lock, which says which
+# versions to download, is committed: resolving main/idf_component.yml afresh
+# takes whatever the registry has that day, and on 2026-09-11 that included an
+# esp_lvgl_port (2.9.0) that does not compile against ESP-IDF 5.5.4.
+managed_components/
 
 # lv_font_conv, installed from tools/package.json. The lockfile is committed so
 # the font generation is reproducible; the tree it unpacks into is not.

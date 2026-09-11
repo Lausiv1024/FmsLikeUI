@@ -103,3 +103,14 @@ if(FMSUI_SANITIZE)
 endif()
 add_test(NAME fmsui_request_frame_test COMMAND fmsui_request_frame_test)
 set_tests_properties(fmsui_request_frame_test PROPERTIES TIMEOUT 60)
+
+# Warnings as errors, on the targets this project owns; CI turns it on.  LVGL is
+# left out on purpose: its warnings are LVGL's to fix, and a compiler that finds
+# a new one there should not be able to turn the framework's build red.
+option(FMSUI_WERROR "Treat warnings in project-owned targets as errors" OFF)
+if(FMSUI_WERROR)
+  foreach(target fmsui fmsui_fonts fmsui_sim
+                 fmsui_test fmsui_interaction_test fmsui_request_frame_test)
+    target_compile_options(${target} PRIVATE -Werror)
+  endforeach()
+endif()

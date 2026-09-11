@@ -19,6 +19,9 @@ if(ESP_PLATFORM)
         INCLUDE_DIRS include
         REQUIRES lvgl
     )
+    if(FMSUI_WERROR)
+        target_compile_options(${COMPONENT_LIB} PRIVATE ${FMSUI_WERROR_FLAGS})
+    endif()
 else()
     add_library(fmsui STATIC ${FMSUI_SRCS})
     add_library(fmsui::fmsui ALIAS fmsui)

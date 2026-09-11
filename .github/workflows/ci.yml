@@ -1,0 +1,144 @@
+# Continuous integration.  The decisions behind it, and what it deliberately does
+# not do, are in docs/DECISIONS.md ("GitHub Actions による継続的インテグレーション").
+#
+#   host (debug), host (asan-ubsan)   pull requests, pushes to master, manual runs
+#   device-build (esp32p4)            pushes to master and manual runs
+#
+# Pins: every action is pinned to a full commit SHA, with the release it was
+# taken from next to it, because a tag can be moved and a SHA cannot.  The
+# ESP-IDF image is pinned by digest for the same reason; the tag beside it says
+# which release that digest is.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch or PR makes the older run pointless.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  host:
+    name: host (${{ matrix.name }})
+    # 22.04 because that is the toolchain (gcc 11.4) the host build and tests are
+    # verified with locally.  Moving to a newer image is its own change, with its
+    # own new warnings to look at.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: debug
+            sanitize: "OFF"
+          - name: asan-ubsan
+            sanitize: "ON"
+    env:
+      # A sanitizer report has to fail the step.  ASan stops at its first error
+      # and LeakSanitizer exits non-zero on its own, but UBSan prints and carries
+      # on unless told to halt.
+      ASAN_OPTIONS: halt_on_error=1:detect_leaks=1
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Install dependencies
+        # CMake and the compiler come with the image; Ninja and SDL2 do not.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build libsdl2-dev
+          cmake --version | head -1
+          c++ --version | head -1
+
+      - name: Configure
+        run: >
+          cmake -S sim -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DFMSUI_SANITIZE=${{ matrix.sanitize }}
+          -DFMSUI_WERROR=ON
+
+      - name: Build
+        id: build
+        run: cmake --build build
+
+      - name: Check that fmsui itself is instrumented
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && matrix.sanitize == 'ON' }}
+        run: python3 tools/ci/check_sanitized.py build
+
+      # The two steps below run even if an earlier one after the build failed, so
+      # a single run reports both the tests and the demos.
+      - name: Test
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        # --timeout applies to tests without a TIMEOUT of their own;
+        # fmsui_request_frame_test keeps its 60 s.
+        run: |
+          ctest --test-dir build --output-on-failure --timeout 120
+          bash tools/ci/check_no_sanitizer_reports.sh build/Testing/Temporary/LastTest.log
+
+      - name: Render demos headlessly
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: bash tools/ci/render_demos.sh build/fmsui_sim ci-out/demos
+
+      - name: Upload failure evidence
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: host-${{ matrix.name }}-failure
+          path: |
+            build/Testing/Temporary/LastTest.log
+            ci-out/demos/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  device-build:
+    name: device-build (esp32p4)
+    # Not on pull requests yet: whether it becomes a required PR check is decided
+    # once its run time and stability are known.
+    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    container:
+      # Espressif's official ESP-IDF image, v5.5.4: the release the device build
+      # is verified with locally.
+      image: espressif/idf:v5.5.4@sha256:b9f2d6ea1c19e0c9f7959bdb74a9e3c775642f9d0f3b841937c5fa3363db892b
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Build every FMSUI_DEMO configuration
+        run: |
+          . "$IDF_PATH/export.sh" >/dev/null
+          bash tools/ci/device_build.sh build-ci ci-out/device
+
+      - name: Upload failure evidence
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: device-build-failure
+          path: |
+            ci-out/device/*.log
+            ci-out/device/*.md
+            ci-out/device/*.lock
+            build-ci/sdkconfig
+            build-ci/log/
+          retention-days: 7
+          if-no-files-found: ignore

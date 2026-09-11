@@ -12,4 +12,21 @@ include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 # introduce a second, conflicting one.
 idf_build_set_property(COMPILE_DEFINITIONS "LV_KCONFIG_IGNORE" APPEND)
 
+# idf.py -DFMSUI_WERROR=ON build  -> a warning in the code this project owns
+# fails the build.  CI turns it on; main, fmsui and fmsui_fonts append these
+# after ESP-IDF's own options.
+#
+# ESP-IDF already compiles with -Werror=all, but then hands -Wextra and the
+# unused-* family back with -Wno-error=<name>, and a later bare -Werror does not
+# undo a -Wno-error=<name>.  So each of those is named again.  Nothing here
+# reaches ESP-IDF, the managed components or LVGL: they keep ESP-IDF's policy.
+set(FMSUI_WERROR_FLAGS
+    -Werror
+    -Werror=unused-function
+    -Werror=unused-variable
+    -Werror=unused-but-set-variable
+    -Werror=deprecated-declarations
+    -Werror=extra
+)
+
 project(fmslikeui)

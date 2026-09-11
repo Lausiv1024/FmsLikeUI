@@ -549,6 +549,235 @@ REM m1 / catalog / fplan / reorder と、既定 (-DFMSUI_DEMO=) も同じ
 - DESIGN.md のポート層の節は、「触れないもの / まだ無いもの」の直前に置いた。
 - `build-clean/` は消さずに残してある(`/build*/` なので git の管理外)。その `FMSUI_DEMO` は既定に戻してある。
 
+## レビュー待ち
+
+### 2026-09-11: GitHub Actions による継続的インテグレーション
+
+**状態: レビュー待ち (2026-09-11)。実装とローカル検証まで済み。GitHub-hosted run の結果は push 後に下の「GitHub-hosted run」へ記録する。完了条件の判定はレビューで行う。**
+
+ローカルでは通常・sanitizer・実機向けのビルドとテストが揃ったが、変更のたびに人がすべてを
+再実行しなければ回帰を検出できない。GitHub Actions で同じ品質ゲートを再現し、pull request では
+ホスト上のフレームワーク検証を必須の基準にする。ESP-IDF の実機向けコンパイルは時間と依存取得が
+大きいため、最初は `master` への push と手動実行に分離する。
+
+#### 1. Pull request と push のホスト CI
+
+Linux の GitHub-hosted runner で、次の二つを独立した job として実行する。
+
+1. **通常設定**: Debug 構成でクリーン configure / build を行い、3 件の CTest を実行する。
+2. **ASan / UBSan 設定**: `FMSUI_SANITIZE=ON` で同じ 3 件を実行し、`fmsui` 静的ライブラリ本体も
+   sanitizer と frame-pointer 付きでコンパイルされていることを確認する。
+
+共通の契約は次のとおり。
+
+- `pull_request`、`master` への `push`、`workflow_dispatch` で起動する。
+- checkout 時に `third_party/lvgl` サブモジュールを再帰的に取得する。
+- CMake、Ninja、SDL2 の必要最小限の依存だけを導入する。
+- `fmsui`、シミュレータ、3 テストなどプロジェクト所有の target だけを警告エラー扱いにする。
+  `third_party/lvgl` の警告をプロジェクト側の責任として固定しない。
+- `m0`、`m1`、`catalog`、`pages`、`reorder`、`fplan` の 6 デモをヘッドレス描画し、PNG が空でないことを確認する。
+  sanitizer job でも同じ経路を通し、sanitizer の報告を失敗にする。
+- CTest と job の timeout を設定し、並行負荷テストの停止を有限時間で失敗へ変える。
+- 同じ workflow / ref の古い実行は `concurrency` でキャンセルする。
+- workflow の権限は `contents: read` を基本とし、書き込み権限や secret を要求しない。
+
+初版ではキャッシュを入れない。依存・サブモジュール・生成物を含めた素の再現性と実測時間を先に確認し、
+時間が問題になった場合だけ、キーと無効化条件を設計して追加する。
+
+#### 2. ESP-IDF の device-build CI
+
+ESP-IDF **5.5.4** を固定した公式環境で ESP32-P4 向けにビルドする。実機への flash は行わない。
+
+- `master` への `push` と `workflow_dispatch` で起動し、初版では pull request の必須 job にしない。
+- `sdkconfig.defaults` から新しい build directory を構成し、既存のローカル `sdkconfig` に依存しない。
+- 最初に既定デモをクリーンビルドし、続けて `m0`、`m1`、`catalog`、`fplan`、`reorder` と既定の
+  6 構成を同じ環境でコンパイルする。
+- `main`、`demo`、`components/fmsui` などプロジェクト所有コードの警告を失敗にする一方、ESP-IDF、
+  managed component、LVGL の外部コードへ一律の `-Werror` は掛けない。
+- 生成された `compile_commands.json` を検査し、`third_party/lvgl/examples` と
+  `third_party/lvgl/demos` が 0 件であることを機械判定する。
+- `fmslikeui.bin` のサイズと最小 app partition の空き容量を job summary に残す。
+- component manager が取得する依存は `dependencies.lock` ではなく `main/idf_component.yml` が現在の基準なので、
+  初回CIの解決結果を確認してから lock file を管理対象に戻すかを別途判断する。
+
+device-build の実行時間と安定性が確認できた後で、pull request の必須 job に昇格するか、変更パスで
+起動を絞るかを判断する。最初から path filter を入れて未検証の変更を取りこぼさない。
+
+#### 3. workflow の保守と証拠
+
+- GitHub Action とESP-IDF環境はバージョンまたは不変の参照へ固定し、選定理由をworkflow内のコメントに残す。
+- ローカル専用の絶対パス、COMポート、WSL依存のコマンドはworkflowへ持ち込まない。
+- 成功時に大量のPNGや中間生成物を保存しない。失敗調査に必要なログや画像だけを、短い保持期間のartifactにする。
+- README にCIの対象範囲を記載する。badgeは実際のGitHub-hosted runが成功してから追加する。
+- ローカル実行、workflow構文確認、GitHub-hosted runを別の証拠として記録し、YAMLを書いただけで完了扱いにしない。
+
+#### 対象外
+
+- 実機への自動flash、USB接続されたself-hosted runner、物理タッチ試験
+- PNGのgolden画像をリポジトリへ保存するスクリーンショット差分試験
+- ThreadSanitizer、長時間耐久試験、定期スケジュール実行
+- release作成、署名、配布パッケージ、GitHub Pages
+- branch protectionやrequired checkのGitHubリポジトリ設定変更
+
+#### 実装完了の条件
+
+- [ ] 通常設定とASan / UBSan設定の独立したホストjobがあり、pull request・`master` push・手動で起動できる。
+- [ ] checkoutがLVGLサブモジュールを含み、クリーンなGitHub-hosted runnerで依存導入から完走する。
+- [ ] 両ホストjobで3件のCTestと6デモのヘッドレス描画が成功する。
+- [ ] sanitizer jobで`fmsui`本体の計装を確認し、ASan / UBSan / LeakSanitizerの報告を失敗にする。
+- [ ] プロジェクト所有targetの警告をエラーにし、外部コードへ同じ方針を強制しない。
+- [ ] ESP-IDF 5.5.4のdevice-build jobが、`master` pushと手動実行で6種類の実機向け構成をビルドする。
+- [ ] device-buildがLVGL Examples / Demos 0件を機械判定し、binサイズとapp領域の空きをsummaryへ記録する。
+- [ ] workflowの権限、timeout、concurrencyが明示され、secretやローカル固有値へ依存しない。
+- [ ] READMEへCIの対象と非対象を記載し、GitHub-hosted run成功後にbadgeを追加する。
+- [ ] ローカル検証とGitHub-hosted runnerの実行結果、所要時間、job名、失敗時artifactの内容をこの章へ記録する。
+
+GitHub-hosted runとbadge確認には、workflowを含むcommitをGitHubへpushする必要がある。実装レビューでは
+ローカルのビルド成功とGitHub上のrun成功を分け、pushされていない段階では最後の完了条件をチェックしない。
+
+#### 実装の結果
+
+| 判断 | 実装 |
+|---|---|
+| workflow | `.github/workflows/ci.yml` の 1 ファイルに 3 job。`host (debug)` と `host (asan-ubsan)` は matrix の 2 job で、`fail-fast: false` なので互いに止め合わない。3 つ目が `device-build (esp32p4)` |
+| 起動 | `pull_request`、`master` への `push`、`workflow_dispatch`。device-build は `if` で push と手動のときだけ走る |
+| 権限・停止 | `permissions: contents: read`。checkout は `persist-credentials: false`、secret は使わない。`concurrency` は `${{ github.workflow }}-${{ github.ref }}` で古い実行をキャンセルする。timeout はホスト job 30 分、device job 60 分、CTest は `--timeout 120`(TIMEOUT を持たないテストの既定値。`fmsui_request_frame_test` は自前の 60 秒のまま) |
+| runner と依存 | `ubuntu-22.04`。導入するのは `ninja-build` と `libsdl2-dev` だけで、CMake とコンパイラは runner image のものを使う |
+| 固定 | actions/checkout と actions/upload-artifact はどちらも v7.0.1 を commit SHA で指定する。ESP-IDF は `espressif/idf:v5.5.4@sha256:b9f2d6ea…` と digest で指定する。tag は動かせるが SHA / digest は動かないという理由を、workflow 冒頭のコメントに書いた |
+| 警告のエラー化 | CMake オプション `FMSUI_WERROR`(既定 OFF、CI で ON)。シムでは `sim/CMakeLists.txt` が `fmsui` / `fmsui_fonts` / `fmsui_sim` / 3 テストに `-Werror` を付ける。実機では最上位 `CMakeLists.txt` の `FMSUI_WERROR_FLAGS` を、`main`(`demo/` を含む)/ `fmsui` / `fmsui_fonts` の各コンポーネントが ESP-IDF の既定オプションの後ろへ足す |
+| sanitizer の報告を失敗にする | job の環境変数 `ASAN_OPTIONS=halt_on_error=1:detect_leaks=1` と `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`。加えて `tools/ci/check_no_sanitizer_reports.sh` が、CTest の `LastTest.log` と各デモのログに報告が無いことを確かめる |
+| `fmsui` 本体の計装 | `tools/ci/check_sanitized.py`。`compile_commands.json` で、`components/fmsui/src/*.cpp` の全ソースに `-fsanitize=address,undefined` と `-fno-omit-frame-pointer` が付いていることを確かめる |
+| デモ | `tools/ci/render_demos.sh`。6 デモをそれぞれ `timeout 120` 付きで `--shot` し、終了コード 0、空でない、PNG シグネチャ、sanitizer 報告なし、の 4 点で判定する。1 つ失敗しても残りを走らせる |
+| device-build | `tools/ci/device_build.sh`。存在しない build dir から始め、`-DSDKCONFIG=<build>/sdkconfig -DIDF_TARGET=esp32p4 -DFMSUI_WERROR=ON` を付けて、既定 → `m0` → `m1` → `catalog` → `fplan` → `reorder` の順にビルドする。サイズは各構成の後に `check_sizes.py` を直接呼んで取る |
+| Examples / Demos 0 件 | `tools/ci/check_lvgl_sources.py`。既定構成の `compile_commands.json` を置き場所で分類し、`third_party/lvgl/examples/` か `third_party/lvgl/demos/` が 1 件でもあれば失敗にする |
+| job summary | 6 構成の bin サイズ・最小 app 領域・空き、コンパイル対象の内訳、lock が変わったかどうか、ビルド後の `dependencies.lock` |
+| 失敗時の artifact | 失敗した job だけが保存し、保持は 7 日。ホスト job は `LastTest.log` と `ci-out/demos/`(PNG と各デモのログ)。device job は各構成のログ、summary、lock(コミット時点とビルド後)、`build-ci/sdkconfig`、`build-ci/log/` |
+| 依存の固定 | `dependencies.lock` をコミットし、`.gitignore` から外した。`device_build.sh` はビルドの前後で lock を比べ、書き換わっていたら失敗にする |
+
+**ESP-IDF 側の警告は `-Werror` を足すだけではエラーにならない。** ESP-IDF 5.5.4 の既定
+(`CONFIG_COMPILER_DISABLE_DEFAULT_ERRORS=y`)では、すべてのソースが
+`-Wall -Werror=all -Wno-error=unused-function -Wno-error=unused-variable -Wno-error=unused-but-set-variable -Wno-error=deprecated-declarations -Wextra -Wno-error=extra`
+でコンパイルされる。gcc は、後ろに付けた `-Werror` で個別の `-Wno-error=<名前>` を取り消さない。
+gcc 11 に同じフラグ列で試すと、`-Werror` を足しただけでは `missing-field-initializers` しかエラーにならず、
+`unused-variable` と `unused-function` は警告のまま残った。そこで `FMSUI_WERROR_FLAGS` には、
+`-Werror` に加えて ESP-IDF が戻した 5 つを `-Werror=<名前>` で並べ直した。実機のコンパイラ (gcc 14) でも
+同じように効くことは、下のミューテーション D1 で確認した。
+
+**依存を解決し直すと、device-build が壊れていた。** 計画では「`dependencies.lock` ではなく
+`main/idf_component.yml` が基準なので、初回 CI の解決結果を見てから lock を管理対象に戻すか判断する」としていた。
+その初回の解決は、GitHub に push する前の、同じイメージを使ったローカル再現で起きた。lock の無いクリーンなツリーでは、
+`managed_components/espressif__esp_lvgl_port/src/lvgl9/esp_lvgl_port_disp.c:160` が
+`'esp_lcd_dpi_panel_event_callbacks_t' has no member named 'on_frame_buf_complete'` で失敗した
+(1729 ステップ中 1646 ステップ目で停止)。手元の lock (2026-07-12) と、解決し直した結果の差は次の 5 件だった。
+
+| component | 手元の lock | 解決し直した結果 |
+|---|---|---|
+| `espressif/m5stack_tab5` | 1.2.0~1 | 1.3.0 |
+| `espressif/esp_lvgl_port` | 2.8.0~1 | 2.9.0 |
+| `espressif/usb` | 1.4.1 | 1.5.0 |
+| `espressif/esp_lcd_touch_gt911` | 1.2.0~2 | 1.2.1 |
+| `espressif/esp_sccb_intf` | 0.0.8 | 0.0.9 |
+
+`esp_lvgl_port` 2.9.0 は `ESP_IDF_VERSION >= 5.5.0` のときに `on_frame_buf_complete` を使う。
+しかし ESP-IDF v5.5.4 の `esp_lcd_mipi_dsi.h` にあるのは `on_color_trans_done` と `on_refresh_done` だけで、
+2.9.0 側の版判定が 5.5.x のリリース系列と合っていない。BSP 1.3.0 は `esp_lvgl_port: ^2` を要求するので、
+範囲指定だけではこの版を避けられない。確認のうえ、実機で動いている 7/12 の lock をコミットすることにした。
+lock を置いた同じツリーでは 6 構成すべてが通り、既定構成の `fmslikeui.bin` は前章の Windows でのクリーンビルドと同じ
+906,832 bytes / 空き 41% になった。
+
+**ローカル検証**(2026-09-11。WSL2 Ubuntu 22.04 / gcc 11.4 / CMake 3.22.1 / 8 コア、Docker Desktop 29.7.2)
+
+GitHub のチェックアウトに近づけるため、作業ツリーをそのまま使わずにスナップショットから検証した。
+スナップショットは、`git ls-files -co --exclude-standard` のファイルと LVGL サブモジュールの追跡ファイルだけを tar にしたもので、
+ホストは WSL の ext4 上、device はコンテナの中へ展開した。コマンドと環境変数は workflow と同じものを使った。
+
+| 対象 | 結果 |
+|---|---|
+| actionlint 1.7.12 + shellcheck 0.11.0 | `ci.yml` はエラー 0 件。`tools/ci/*.sh` への shellcheck も指摘 0 件 |
+| `host (debug)` 相当 | 561 ステップ、ビルド 19 秒、`warning:` 0 件。CTest 3/3 成功 (0.17 秒)。6 デモ成功 |
+| `host (asan-ubsan)` 相当 | 561 ステップ、ビルド 20 秒、`warning:` 0 件。`fmsui` 8/8 ソースが計装済み。CTest 3/3 成功 (0.27 秒)。6 デモ成功、sanitizer の報告 0 件 |
+| `-Werror` が付いた範囲(ホスト) | `fmsui` 8、`fmsui_fonts` 5、`demo/` 6、`sim/` 1、`tests/` 3 の各ソースに付き、LVGL の 531 ソースには付いていない |
+| `FMSUI_WERROR_FLAGS` が付いた範囲(実機) | 6 フラグすべてが `fmsui` 8、`fmsui_fonts` 5、`demo/` 6、`main/` 1 に付き、LVGL 530 と managed component 105 には 1 つも付いていない。ESP-IDF 本体では 141 ソースに `-Werror` があったが、すべて mbedtls 自前のもので、`FMSUI_WERROR` なしの `build-clean/` にも同じ 141 件がある |
+| device-build 相当(lock なし) | 上記のとおり `esp_lvgl_port` 2.9.0 で失敗 (118 秒) |
+| device-build 相当(手元の lock) | 6 構成成功 (222 秒)。コンパイル対象 1594 件、Examples / Demos 0 / 0 件、6 構成のログで `warning:` 0 件。ビルド後も lock は変わらなかった |
+| device-build 相当(最終ツリー) | lock をコミット対象に含め、`device_build.sh` に lock の判定を入れた後のツリーを、あらためて空の状態から実行した。6 構成成功 (221 秒)。サイズ、コンパイル対象の内訳、`warning:` 0 件は上と同じで、summary は「dependencies.lock: unchanged by the build」 |
+
+6 デモの PNG はどれも 2,765,798 bytes だった。`sim/png_write.h` が deflate を無圧縮ブロックで書くので、
+1280x720 ならサイズは同じになる。中身の md5 は 6 枚とも異なっていた。
+
+device-build の bin サイズ(手元の lock、最小 app 領域はどれも 1,536,000 bytes)
+
+| 構成 | `fmslikeui.bin` | 空き |
+|---|---:|---:|
+| 既定 | 906,832 bytes | 629,168 bytes (41%) |
+| `m0` | 878,464 bytes | 657,536 bytes (43%) |
+| `m1` | 912,688 bytes | 623,312 bytes (41%) |
+| `catalog` | 934,272 bytes | 601,728 bytes (39%) |
+| `fplan` | 901,792 bytes | 634,208 bytes (41%) |
+| `reorder` | 918,336 bytes | 617,664 bytes (40%) |
+
+所要時間は、ホストと device を同じマシン(同じ WSL2 VM)で並行して走らせた回を含むので、参考値にとどめる。
+
+**壊れた実装を検出できることの確認 (ミューテーション)。** スナップショットを 1 か所ずつ壊し、CI と同じ手順で
+インクリメンタルに再ビルドした。どれも元に戻した後で、再び全手順が成功することも確認した。
+
+| # | 壊し方 | 結果 |
+|---|---|---|
+| M1 | `components/fmsui/src/theme.cpp` に未使用の static 変数を追加 | `FMSUI_WERROR=ON` ではビルドが `-Werror=unused-variable` で失敗した。OFF では警告 1 件でビルドもテストも通った |
+| M2 | `third_party/lvgl/src/core/lv_obj.c` に `#warning` を追加 | 警告 1 件が出たが、ビルド・CTest・デモはすべて成功した(外部コードの警告では落ちない) |
+| M3 | `FmsApp::init` に符号付き整数のオーバーフローを追加 | asan-ubsan で CTest 3/3 が失敗し、ログ検査も失敗した。デモは `m0`(`FmsApp` を使わない)以外の 5 つが失敗した。`UBSAN_OPTIONS` から `halt_on_error` を外すと CTest は通ったが、ログ検査とデモ 5 つが「sanitizer report」で失敗した。debug 設定はすべて通った |
+| M4 | `FmsApp::init` に `new int[16]` のリークを追加 | CTest 3/3 が LeakSanitizer で失敗し、ログ検査とデモ 5 つも失敗した |
+| M5 | `--shot` のファイルを空にする / PNG でない内容を書く / 何も書かない、偽のシミュレータ | 3 つとも `render_demos.sh` が失敗した(「no PNG, or an empty one」「not a PNG」) |
+| D1 | `main/main.cpp` に、初期化子の不足・未使用変数・未使用関数を追加 | riscv32-esp-elf-gcc 14.2.0 で、`FMSUI_WERROR=ON` では 3 つとも `-Werror=missing-field-initializers` / `-Werror=unused-variable` / `-Werror=unused-function` のエラーになった。OFF では警告 3 件でビルドが通った |
+| D2 | `components/fmsui/src/theme.cpp` に未使用の static 変数を追加(実機) | `-Werror=unused-variable` で失敗した |
+| D3 | `third_party/lvgl/src/core/lv_obj.c` に未使用の static 変数を追加(実機) | `-Wunused-variable` の警告 1 件で、ビルドは成功した |
+| D4 | `main/idf_component.yml` の `m5stack_tab5` を `">=1.2.0,<1.3.0"` に変え、lock と食い違わせる | `device_build.sh` が「dependencies.lock was rewritten during the build」で失敗した。manifest_hash が変わったことで推移的な依存がすべて解決し直され、m5stack_tab5 は 1.2.0~1 のままでも、esp_lvgl_port 2.9.0・usb 1.5.0・gt911 1.2.1・sccb_intf 0.0.9 に上がった。その結果、既定構成のビルド自体も同じ `on_frame_buf_complete` のエラーで失敗した。範囲指定を少し変えるだけで依存が上がって壊れるので、lock を監視する理由の実例になった。(手元のツリーは lock が CRLF だったため diff が全行になったが、CI のチェックアウトは LF なので、CI では変わった行だけが出る) |
+| D5 | 前章の 9/9 の実機ビルド `build/` の `compile_commands.json` を判定にかける | `check_lvgl_sources.py` が examples 257 件 / demos 1 件で失敗した。現行の `build-clean/` は 0 / 0 件で成功した |
+
+**GitHub-hosted run**
+
+このコミットを push した後の run で記録する。badge も、その run の成功を確認してから README に追加する。
+
+**検証コマンド**
+
+```bash
+# ホスト job(workflow の run: と同じ)
+export ASAN_OPTIONS=halt_on_error=1:detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
+cmake -S sim -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DFMSUI_SANITIZE=ON -DFMSUI_WERROR=ON   # debug は OFF
+cmake --build build
+python3 tools/ci/check_sanitized.py build                                                   # asan-ubsan だけ
+ctest --test-dir build --output-on-failure --timeout 120
+bash tools/ci/check_no_sanitizer_reports.sh build/Testing/Temporary/LastTest.log
+bash tools/ci/render_demos.sh build/fmsui_sim ci-out/demos
+
+# device job(ESP-IDF 5.5.4 のコンテナ内)
+. "$IDF_PATH/export.sh"
+bash tools/ci/device_build.sh build-ci ci-out/device
+```
+
+**実装前に確認して決めたこと**
+
+- push は、ローカル検証が通った後にこちらで行う。先行していた 12 コミットも一緒に origin/master へ送る。
+- 警告のエラー化は CMake オプション `FMSUI_WERROR` で行い、既定は OFF にして CI だけ ON にする。
+- ホスト job は `ubuntu-22.04`。timeout はホスト 30 分・device 60 分、CTest の既定は 120 秒。
+- device-build のローカル検証は、Docker で CI と同じイメージを使って行う。
+- 依存の固定は `dependencies.lock` のコミットで行う(上記の失敗を見つけてから確認した)。
+
+**確認せずに決めたこと**
+
+- ホストの 2 job は、別々の job を書かずに matrix にした。`fail-fast: false` なので独立性は変わらない。
+- Action は、確認時点の最新 v7.0.1 を選んだ。ESP-IDF イメージは、tag を残したうえで digest で固定した。
+- artifact の保持期間は 7 日にした。
+- sanitizer は、halt させる環境変数と、ログ検査の二重で失敗させる。
+- 検査は workflow にインラインで書かず、`tools/ci/` のスクリプトにした。ローカルで同じものを走らせるためである。
+  実行ビットには頼らず、`bash` / `python3` で呼ぶ。
+- device-build のビルド順は、既定(クリーン)→ `m0` → `m1` → `catalog` → `fplan` → `reorder` の 6 回にした。最後に既定へ戻すビルドはしない。
+- 生成物の `fmsui_fonts` もプロジェクト所有として `-Werror` の対象に入れた。
+- CTest とデモの step は、ビルドが成功していれば、途中の step が失敗しても走らせる。
+- lock のコミットに合わせて、ビルド中に lock が書き換わったら失敗にする判定を `device_build.sh` に入れた(計画には無い)。
+- README には、CI の節、`tools/ci/` の行、実機節に lock での依存固定と更新手順の段落を追加した。DESIGN.md は変えていない。
+- job summary の文言は英語にした。
+
 ## 計画中・未実装
 
 いまのところ無し。次の判断が決まったらここに書く。

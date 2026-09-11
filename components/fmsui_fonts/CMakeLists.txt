@@ -9,6 +9,9 @@ if(ESP_PLATFORM)
         INCLUDE_DIRS include
         REQUIRES lvgl
     )
+    if(FMSUI_WERROR)
+        target_compile_options(${COMPONENT_LIB} PRIVATE ${FMSUI_WERROR_FLAGS})
+    endif()
 else()
     add_library(fmsui_fonts STATIC ${FMSUI_FONT_SRCS})
     target_include_directories(fmsui_fonts PUBLIC include)

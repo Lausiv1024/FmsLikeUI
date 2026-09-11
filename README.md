@@ -83,6 +83,24 @@ ctest --test-dir build-asan --output-on-failure   # 3 つすべてを ASan/UBSan
 負荷試験はスレッド同士を condition variable で待ち合わせるので、壊れると失敗ではなく**停止**します。
 CTest の timeout (60 秒) でそれを失敗に変え、他の 2 つを巻き込まないように独立させてあります。
 
+### CI(GitHub Actions)
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) が次の 3 つの job を走らせます。
+
+| job | 起動 | やること |
+|---|---|---|
+| `host (debug)` | pull request、`master` への push、手動 | Debug ビルド、3 件の CTest、6 デモのヘッドレス描画(空でない PNG が出ること) |
+| `host (asan-ubsan)` | 同上 | 同じことを `FMSUI_SANITIZE=ON` で行う。`fmsui` 本体が計装されていることも確かめ、ASan / UBSan / LeakSanitizer の報告を失敗にする |
+| `device-build (esp32p4)` | `master` への push、手動 | ESP-IDF 5.5.4 の公式コンテナで、既定と `FMSUI_DEMO` の 5 構成をビルドする。LVGL Examples / Demos が 0 件であることを判定し、bin サイズと app 領域の空きを job summary に出す |
+
+警告をエラーにするのはプロジェクトのコード(`components/`、`main/`、`demo/`、`sim/`、`tests/`)だけで、
+LVGL、ESP-IDF、managed component には掛けません。手元でも `-DFMSUI_WERROR=ON` で同じ扱いになります
+(シムは `cmake -S sim ... -DFMSUI_WERROR=ON`、実機は `tools\idf.bat -DFMSUI_WERROR=ON build`)。
+失敗した job だけが、調査用のログと PNG を 7 日間の artifact に残します。
+
+CI の対象外: 実機への書き込みと物理タッチ、PNG の見た目の比較、ThreadSanitizer、長時間の耐久試験、
+定期実行、リリース作成。device-build は pull request では走りません。
+
 ### 実機(M5Stack Tab5)
 
 **ESP-IDF 5.5 以上が必要です。** 公式 BSP が依存する `espressif/usb` は IDF 5.5 の HAL API を
@@ -98,6 +116,11 @@ tools\idf.bat -p COM7 flash
 tools\idf.bat -DFMSUI_DEMO=fplan build
 tools\idf.bat -DFMSUI_DEMO=reorder -DFMSUI_ROWS=40 build
 ```
+
+BSP などの managed component の版は、コミットしてある `dependencies.lock` で固定しています。
+`main/idf_component.yml` の範囲指定だけに任せると、その日のレジストリの最新が入ります
+(2026-09-11 には、ESP-IDF 5.5.4 でコンパイルできない `esp_lvgl_port` 2.9.0 が選ばれました)。
+依存を上げるときは `tools\idf.bat update-dependencies` で lock を作り直し、実機で確認してから lock ごとコミットしてください。
 
 シリアルログは `idf.py monitor` が TTY を要求して使えないので、専用スクリプトを使います。
 
@@ -147,6 +170,7 @@ MSBuild になる・`$ENV{IDF_PATH}` 次第で別の ESP-IDF が読まれる、�
 | `tools/gen_lv_conf.py` | `lv_conf.h` を LVGL のテンプレートから生成 |
 | `tools/gen_fonts.py` | TTF を LVGL のビットマップフォントに変換 |
 | `tools/serial_capture.py` | 実機のシリアルログを取る |
+| `tools/ci/` | CI が呼ぶ検査。デモの描画、サニタイザ計装とその報告、実機ビルド 6 構成と LVGL ソースの内訳 |
 | `tools/idf.bat` | Windows から ESP-IDF を叩く(実機ビルドの主経路) |
 | `tools/idf.sh` | 同じことを WSL から。interop が生きているときだけ動く |
 

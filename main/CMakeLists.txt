@@ -17,6 +17,12 @@ idf_component_register(
         esp_timer
 )
 
+# -DFMSUI_WERROR=ON: see FMSUI_WERROR_FLAGS in the top-level CMakeLists.txt.
+# This covers demo/ too, whose sources are compiled as part of this component.
+if(FMSUI_WERROR)
+    target_compile_options(${COMPONENT_LIB} PRIVATE ${FMSUI_WERROR_FLAGS})
+endif()
+
 # idf.py -DFMSUI_DEMO=m0 build  -> the raw-LVGL probe screen instead of the framework
 if(FMSUI_DEMO STREQUAL "m0")
     target_compile_definitions(${COMPONENT_LIB} PRIVATE FMSUI_DEMO_M0=1)
