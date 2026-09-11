@@ -549,11 +549,9 @@ REM m1 / catalog / fplan / reorder と、既定 (-DFMSUI_DEMO=) も同じ
 - DESIGN.md のポート層の節は、「触れないもの / まだ無いもの」の直前に置いた。
 - `build-clean/` は消さずに残してある(`/build*/` なので git の管理外)。その `FMSUI_DEMO` は既定に戻してある。
 
-## レビュー待ち
-
 ### 2026-09-11: GitHub Actions による継続的インテグレーション
 
-**状態: レビュー待ち (2026-09-11)。実装、ローカル検証、GitHub-hosted run の成功と README の badge まで済み。完了条件の判定はレビューで行う。**
+**状態: 実装済み (2026-09-11)。完了条件 10 件をレビューで確認済み。**
 
 ローカルでは通常・sanitizer・実機向けのビルドとテストが揃ったが、変更のたびに人がすべてを
 再実行しなければ回帰を検出できない。GitHub Actions で同じ品質ゲートを再現し、pull request では
@@ -621,16 +619,16 @@ device-build の実行時間と安定性が確認できた後で、pull request 
 
 #### 実装完了の条件
 
-- [ ] 通常設定とASan / UBSan設定の独立したホストjobがあり、pull request・`master` push・手動で起動できる。
-- [ ] checkoutがLVGLサブモジュールを含み、クリーンなGitHub-hosted runnerで依存導入から完走する。
-- [ ] 両ホストjobで3件のCTestと6デモのヘッドレス描画が成功する。
-- [ ] sanitizer jobで`fmsui`本体の計装を確認し、ASan / UBSan / LeakSanitizerの報告を失敗にする。
-- [ ] プロジェクト所有targetの警告をエラーにし、外部コードへ同じ方針を強制しない。
-- [ ] ESP-IDF 5.5.4のdevice-build jobが、`master` pushと手動実行で6種類の実機向け構成をビルドする。
-- [ ] device-buildがLVGL Examples / Demos 0件を機械判定し、binサイズとapp領域の空きをsummaryへ記録する。
-- [ ] workflowの権限、timeout、concurrencyが明示され、secretやローカル固有値へ依存しない。
-- [ ] READMEへCIの対象と非対象を記載し、GitHub-hosted run成功後にbadgeを追加する。
-- [ ] ローカル検証とGitHub-hosted runnerの実行結果、所要時間、job名、失敗時artifactの内容をこの章へ記録する。
+- [x] 通常設定とASan / UBSan設定の独立したホストjobがあり、pull request・`master` push・手動で起動できる。
+- [x] checkoutがLVGLサブモジュールを含み、クリーンなGitHub-hosted runnerで依存導入から完走する。
+- [x] 両ホストjobで3件のCTestと6デモのヘッドレス描画が成功する。
+- [x] sanitizer jobで`fmsui`本体の計装を確認し、ASan / UBSan / LeakSanitizerの報告を失敗にする。
+- [x] プロジェクト所有targetの警告をエラーにし、外部コードへ同じ方針を強制しない。
+- [x] ESP-IDF 5.5.4のdevice-build jobが、`master` pushと手動実行で6種類の実機向け構成をビルドする。
+- [x] device-buildがLVGL Examples / Demos 0件を機械判定し、binサイズとapp領域の空きをsummaryへ記録する。
+- [x] workflowの権限、timeout、concurrencyが明示され、secretやローカル固有値へ依存しない。
+- [x] READMEへCIの対象と非対象を記載し、GitHub-hosted run成功後にbadgeを追加する。
+- [x] ローカル検証とGitHub-hosted runnerの実行結果、所要時間、job名、失敗時artifactの内容をこの章へ記録する。
 
 GitHub-hosted runとbadge確認には、workflowを含むcommitをGitHubへpushする必要がある。実装レビューでは
 ローカルのビルド成功とGitHub上のrun成功を分け、pushされていない段階では最後の完了条件をチェックしない。
@@ -760,6 +758,20 @@ device-build の bin サイズ(手元の lock、最小 app 領域はどれも 1,
 
 GitHub 上でまだ通していない経路: `pull_request` と `workflow_dispatch` による起動、`concurrency` によるキャンセル、
 timeout による停止、失敗時の artifact の保存。検出の仕組みそのものは、上のミューテーションでローカルに確認した。
+
+**レビュー確認** (2026-09-11)
+
+- `master` の badge 追加後の commit `c328115` でも
+  [run #2 (34550709001)](https://github.com/Lausiv1024/FmsLikeUI/actions/runs/34550709001) が起動し、
+  3 job とも success (全体 9 分 46 秒、device-build 9 分 41 秒)。device summary で6構成のサイズ、
+  LVGL Examples / Demos 0 / 0件、`dependencies.lock` が不変であることを確認した。
+- 既存の通常ビルドとsanitizerビルドに対し、レビュー側でもCTest 3/3と6デモを再実行して成功した。
+  sanitizer側は`fmsui` 8/8ソースの計装と、CTest・デモログにsanitizer報告がないことも確認した。
+- `tools/ci/*.sh` はshellcheckで指摘0件。差分の`git diff --check`も問題なし。
+- ActionのSHAは各v7.0.1 releaseと一致する。workflowの条件式にある`!cancelled()`はstatus check functionなので、
+  build成功後の検査が一つ失敗しても後続のCTestとデモを実行する意図と一致する。
+- 実際のpull request・手動起動・キャンセル・timeout・失敗artifact uploadは未実行のまま。これは上記の
+  成功run、workflow構造、ローカルのミューテーション確認と区別して残し、運用で初めて発生したときに追記する。
 
 **検証コマンド**
 
