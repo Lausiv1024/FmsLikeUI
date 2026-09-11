@@ -38,6 +38,15 @@ CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
 CONFIG_FREERTOS_HZ=1000
 
+# --- LVGL examples and demos. The top-level CMakeLists ignores LVGL's Kconfig
+#     and takes the configuration from third_party/lv_conf.h, but these two are
+#     read by LVGL's own ESP-IDF build (env_support/cmake/esp.cmake) to decide
+#     which sources to compile -- and Kconfig defaults both to y. Nothing here
+#     calls them, so a clean build was compiling every lvgl/examples file and
+#     lvgl/demos/lv_demos.c for nothing. ---
+# CONFIG_LV_BUILD_EXAMPLES is not set
+# CONFIG_LV_BUILD_DEMOS is not set
+
 # --- Rotation. The panel is portrait; our UI is landscape. Hand the rotation to
 #     the P4's PPA rather than doing it on the CPU. Turn this off in menuconfig
 #     to measure what software rotation costs us. ---

@@ -80,6 +80,15 @@ Element に Widget のコピーを所有させて dirty サブツリーだけ再
 
 いま最適化しないのは、**その必要が無いことを実機の数字が示しているから**です。
 
+## 実機用のポート層は作っていない
+
+当初の計画([PLAN.md](PLAN.md))では、BSP・esp_lvgl_port・タッチ・tick をまとめる
+`components/fmsui_port_esp/` を置くつもりでした。**作りませんでした。** BSP の初期化も回転もタッチも
+esp_lvgl_port が持っていて、`main/main.cpp` から数行呼ぶだけで足りたためです。抽象化する対象がありません。
+
+空のディレクトリだけが残っていた時期があり、ESP-IDF の configure のたびに警告が出ていたので削除しました。
+計画に載っているからといって、穴埋めのために作り直さないでください。
+
 ## 触れないもの / まだ無いもの
 
 - **クリッピングとスクロール**: `lv_obj` がフラットなので、クリップは今のところ効きません。
@@ -390,7 +399,9 @@ new Text{{ .text = "153", .font = t.font.value, .color = t.color.entry }}   // e
 ## FMS ウィジェット (M3)
 
 `FmsScaffold` / `FmsPanel` / `FmsTabs` / `FmsFieldBox` / `FmsButton` / `FmsDropdown` / `FmsRadio` /
-`FmsDivider` / `FmsScratchpad` / `FmsKeypad`。**すべて StatelessWidget で、プリミティブの合成**です。
+`FmsDivider` / `FmsScratchpad` / `FmsKeypad`。**どれもプリミティブの合成**です。
+状態を持たない StatelessWidget が基本で、例外は `FmsDropdown` だけです。「リストが開いているか」は
+置いた側ではなく部品自身のものなので、開閉状態を内部に持つ StatefulWidget にしています。
 新しい RenderObject を足したのは 1 つだけ:
 
 ### CustomPaint — 矩形で作れない形のために
@@ -504,6 +515,23 @@ new Container{{ .padding = ..., .color = kBg }}   // OK(構造体の宣言順)
 
 Flutter の名前付き引数と違い、順序が自由ではありません。これは C++ の制約で回避できません。
 Args 構造体のフィールド順は、使う側が書きたい順(外側→内側、レイアウト→装飾→child)に並べています。
+
+### 省略してよいフィールドには `{}` を書く
+
+`-Wextra` に含まれる `-Wmissing-field-initializers` は、指定初期化子で省略したフィールドのうち
+**既定メンバ初期化子を持たないもの**を警告します。`Str text2;` を省略すると警告になり、
+`VoidCallback on_tap{};` は省略しても警告になりません。
+
+これを「必須かどうか」の目印として使っています。
+
+- 空に意味がある値には、Args 側で `{}` を書きます。`FmsButtonArgs::text2`(空なら 1 行)、
+  `FmsValueArgs::unit` / `FmsFieldBoxArgs::unit`(単位なし)、`FmsDropdownArgs::text`(items があれば使わない)、
+  `FmsFieldBoxArgs::text`(`empty` ならダッシュを出すので使わない)、`FmsScratchpadArgs::message`(空なら入力を出す)。
+- `FmsLabel` / `FmsButton` / `FmsRadio` / `FmsValue` の `text` のように、無いと部品が成り立たない値には
+  既定値を書きません。書き忘れればコンパイラが警告します。
+
+警告を消すために `-Wno-missing-field-initializers` を足したり、呼ぶ側に `.text2 = ""` を並べたりはしません。
+前者は必須値の書き忘れまで隠し、後者は「1 行でよい」という意図を毎回の書き足しに埋もれさせます。
 
 ### Widget 以外を `new` してはいけない
 

@@ -214,7 +214,7 @@ void RenderLv::paint(PaintContext &ctx, Offset origin) {
 
     /* LVGL draws children in index order, so handing out consecutive indices in
      * paint order is what makes a Stack's later children land on top. */
-    if (lv_obj_get_index(lv_) != static_cast<uint32_t>(ctx.next_index)) {
+    if (lv_obj_get_index(lv_) != ctx.next_index) {
         lv_obj_move_to_index(lv_, ctx.next_index);
         ctx.moved++;
     }
@@ -297,6 +297,7 @@ lv_obj_t *RenderDecoratedBox::createLv(lv_obj_t *parent) {
 }
 
 void RenderDecoratedBox::syncLv(PaintContext &ctx, lv_obj_t *obj) {
+    (void)ctx;
     const lv_style_t *want = styleCache().box(decoration);
     if (applied_style_ == want) return;
 
@@ -482,6 +483,7 @@ lv_obj_t *RenderGestureDetector::createLv(lv_obj_t *parent) {
 }
 
 void RenderGestureDetector::syncLv(PaintContext &ctx, lv_obj_t *obj) {
+    (void)ctx;
     /* A detector with nothing to call must not take the touch: LVGL's hit test
      * stops at the topmost clickable object, so leaving the flag on would let a
      * disabled button swallow a tap meant for a dropdown's barrier behind it --

@@ -143,7 +143,7 @@ MSBuild になる・`$ENV{IDF_PATH}` 次第で別の ESP-IDF が読まれる、�
 | `components/fmsui_fonts/` | B612 Mono のビットマップフォント(生成物)|
 | `assets/fonts/` | 元の TTF |
 | `third_party/lvgl` | LVGL v9.5.0(submodule)。`third_party/lv_conf.h` を実機とシムで共有 |
-| `tests/` | ホストのユニットテスト。レイアウトと差分検出、およびヘッドレスの操作テスト |
+| `tests/` | ホストのテスト。レイアウトと差分検出、ヘッドレスの操作テスト、`requestFrame()` の並行負荷テスト |
 | `tools/gen_lv_conf.py` | `lv_conf.h` を LVGL のテンプレートから生成 |
 | `tools/gen_fonts.py` | TTF を LVGL のビットマップフォントに変換 |
 | `tools/serial_capture.py` | 実機のシリアルログを取る |

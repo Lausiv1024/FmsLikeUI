@@ -2,10 +2,15 @@
 
 /* The FMS widget set.
  *
- * Everything here is a StatelessWidget composed from the primitives -- there is
- * no new render object except where a shape genuinely cannot be made of
- * rectangles (the slanted tabs, the dropdown triangle, the radio dot), and those
- * use CustomPaint.
+ * Everything here is composed from the primitives -- there is no new render
+ * object except where a shape genuinely cannot be made of rectangles (the
+ * slanted tabs, the dropdown triangle, the radio dot), and those use CustomPaint.
+ * They are StatelessWidgets, except FmsDropdown: whether its list is open
+ * belongs to the control, so it keeps that in a State of its own.
+ *
+ * In the Args structs, a field that may be left out says so with `{}`. A field
+ * with no default -- the text of a label or a button -- is one the widget cannot
+ * do without, and -Wmissing-field-initializers reports a caller that forgets it.
  *
  * Colours come from FmsTheme by role, never by name: a value the pilot may enter
  * is `entry`, not `cyan`.
@@ -50,7 +55,7 @@ Color colorFor(const FmsThemeData &theme, FmsRole role);
 
 struct FmsValueArgs {
     Str text;
-    Str unit;  /* drawn smaller, after the number, as on the real screens */
+    Str unit{};  /* drawn smaller, after the number, as on the real screens */
     FmsRole role = FmsRole::Computed;
     Key key{};
 };
@@ -68,8 +73,8 @@ private:
 /* ---- Fields and controls ----------------------------------------------- */
 
 struct FmsFieldBoxArgs {
-    Str text;
-    Str unit;
+    Str text{};  /* not shown when `empty` */
+    Str unit{};
     FmsRole role = FmsRole::Entry;
     /* An empty field shows the dashes the real screens show, not nothing. */
     bool empty = false;
@@ -91,7 +96,7 @@ private:
 struct FmsButtonArgs {
     Str text;
     /* Two lines, as on POS MONITOR / CPNY T.O REQUEST. Empty means one line. */
-    Str text2;
+    Str text2{};
     FmsRole role = FmsRole::Label;
     bool enabled = true;
     VoidCallback on_tap{};
@@ -118,7 +123,7 @@ struct FmsDropdownArgs {
     int index = 0;
 
     /* Shown when there are no items. With items, the selected one is shown. */
-    Str text;
+    Str text{};
 
     FmsRole role = FmsRole::Entry;
     std::function<void(int)> on_selected{};
@@ -356,7 +361,7 @@ private:
  * comes with it. */
 struct FmsScratchpadArgs {
     Str text;
-    Str message;  /* an error or advisory, shown instead of the entry when set */
+    Str message{};  /* an error or advisory, shown instead of the entry when set */
     bool error = false;
     Key key{};
 };

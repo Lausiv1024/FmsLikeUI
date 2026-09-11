@@ -60,10 +60,14 @@ uint32_t micros() { return static_cast<uint32_t>(esp_timer_get_time()); }
  * asserts when called from a FreeRTOS task that was not created as a pthread --
  * and the frame loop runs on the task esp_lvgl_port creates, which is one. The
  * board rebooted on its first frame until this replaced it. The task handle is
- * the identity FreeRTOS actually has. */
+ * the identity FreeRTOS actually has.
+ *
+ * The raw-LVGL probe never starts the framework, so it has no use for this. */
+#if !defined(FMSUI_DEMO_M0)
 fmsui::ThreadId thread_id() {
     return reinterpret_cast<fmsui::ThreadId>(xTaskGetCurrentTaskHandle());
 }
+#endif
 
 void log_memory() {
     ESP_LOGI(kTag, "heap: internal free %u (largest %u) | psram free %u (largest %u)",

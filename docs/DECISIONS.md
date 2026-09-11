@@ -384,6 +384,171 @@ LVGL と `fmsui` もまとめて計装した。この環境の gcc 11 の TSan �
 - 反復回数は前章に倣って 20 回にした。
 - README のテスト表と DESIGN.md の「requestFrame() が安全な理由」に、新しい実行ファイルを 1 段落ずつ追記した。
 
+### 2026-09-11: 実機ビルド設定・警告・文書整合性の整理
+
+**状態: 実装済み (2026-09-11)。完了条件 8 件をレビューで確認済み。**
+
+並行性、ライフタイム、操作経路の自動テストが揃ったため、次は日常のビルドで新しい問題を
+見落とさない状態を作る。対象はフレームワークと検証環境の保守性であり、デモアプリの機能追加や
+FMS の業務ロジックは含めない。
+
+#### 1. 使用していない LVGL Examples / Demos をビルドしない
+
+現在の実機用 `sdkconfig` は `CONFIG_LV_BUILD_EXAMPLES` と `CONFIG_LV_BUILD_DEMOS` が有効だが、
+FmsLikeUI はそれらのソースを使用していない。最終バイナリへリンクされない場合でも、クリーンビルドの
+対象と設定の意図を増やすため、再生成可能なプロジェクト設定で明示的に無効化する。
+
+- `sdkconfig.defaults` を設定の基準にし、既存の `sdkconfig` も同じ状態へ同期する。
+- クリーンな実機ビルドのログまたは生成されたビルド情報で、`lvgl/examples` と `lvgl/demos` の
+  ソースがコンパイル対象に入らないことを確認する。
+- ビルド時間は環境差が大きいため合格値にはせず、必要なら変更前後の参考値だけを記録する。
+- LVGL 本体、描画、入力、フォントの設定はこの作業では変更しない。
+
+#### 2. プロジェクト側の警告を原因から解消する
+
+既知の警告は主に C++20 の指定初期化で、省略可能な `FmsButtonArgs::text2`、
+`FmsFieldBoxArgs::text` / `unit`、`FmsDropdownArgs::text` などを省いた箇所から出ている。
+
+- 本当に省略可能な引数は Args 側の既定値で、その意図を API として表す。
+- 必須値または呼び出し側の意図を示すべき値は、利用箇所で明示する。
+- `-Wno-missing-field-initializers` の追加や `-Wall` / `-Wextra` の削除で警告を隠さない。
+- `third_party/` と `managed_components/` の外にあるプロジェクト所有ソースを警告 0 件にする。
+- 警告修正のためだけに Widget の表示、操作契約、既定の見た目を変えない。
+
+#### 3. 現在の実装に文書を合わせる
+
+少なくとも次の既知のずれを修正する。
+
+- `FmsDropdown` は開閉状態を内部に持つ `StatefulWidget` なので、`fms.h` と DESIGN.md の
+  「FMS ウィジェットはすべて StatelessWidget」という説明を訂正する。
+- README の `tests/` の説明へ `requestFrame()` の並行負荷テストを含める。
+- `PLAN.md` は当初計画として残し、完了状況を後付けで混在させない。現在の判断と結果は
+  DECISIONS.md と DESIGN.md に記録する。
+
+#### 対象外
+
+- デモアプリのボタン、画面遷移、入力検証などの機能追加
+- クリッピング、スクロール、アニメーション、GlobalKey、dirty サブツリー再ビルド
+- LVGL のバージョン更新、PPA 描画設定、描画バッファやフレーム周期の再調整
+- CI の導入、配布パッケージ、プロジェクト本体のライセンス決定
+- 実機の性能最適化と、ビルド時間に対する固定の合格値
+
+CI はこの整理後に、警告の無い再現可能なビルドと既存の 3 CTest を自動化する別計画として扱う。
+
+#### 実装完了の条件
+
+- [x] 再生成可能な設定で LVGL Examples / Demos を無効化する。
+- [x] クリーンな実機ビルドで `lvgl/examples` / `lvgl/demos` がコンパイルされないことを確認する。
+- [x] 通常のシミュレータビルドと実機ビルドで、プロジェクト所有ソースの警告を 0 件にする。
+- [x] 警告を無効化するコンパイラオプションを追加せず、省略可能な値と必須値の意図をコードで表す。
+- [x] 通常設定と、`fmsui` 本体を計装した ASan / UBSan 設定で 3 件の CTest がすべて成功する。
+- [x] 6 種類の既存デモをヘッドレスで起動・描画でき、表示または操作契約に回帰がない。
+- [x] `fms.h`、DESIGN.md、README の既知の説明ずれを修正する。
+- [x] 実装結果、検証コマンド、警告件数、Examples / Demos 除外の証拠をこの章へ記録する。
+
+実機への書き込みと物理タッチ確認は、この作業がビルド対象と既定値・文書だけを整理する限り
+完了条件に含めない。表示や操作を変える必要が生じた場合は、その変更について別途実機確認を行う。
+
+#### レビュー結果
+
+2026-09-11 のレビューで、実装と記録に未解決の指摘は無かった。
+
+- `sdkconfig` と `build-clean/config/sdkconfig.cmake` で Examples / Demos が無効なことを確認した。
+  `build-clean/compile_commands.json` を再集計すると全 1594 件のうち `lvgl/examples` と
+  `lvgl/demos` はともに 0 件で、LVGL 本体 530 件、`fmsui` 8 件、フォント 5 件、main + demo 7 件は残っていた。
+- 通常設定と ASan / UBSan 設定をそれぞれ `--clean-first` で再構築した。どちらも 561 ステップを
+  完了し、ビルドログの `warning:` は 0 件だった。ASan / UBSan 側の compile commands では
+  `fmsui` の 8 ソースすべてに sanitizer と frame-pointer のオプションが付いていた。
+- 両設定で 3 件の CTest がすべて成功した。6 デモを両設定で計 12 回ヘッドレス描画し、同じデモの
+  PNG は 6 組とも一致した。ASan / UBSan / LeakSanitizer の報告も無かった。
+- 実装時の実機クリーンビルドの生成物とログを確認したうえで、現行ソースを
+  `tools\\idf.bat -B build-clean build` でも再確認した。ESP-IDF 5.5.4 のビルドは警告なく成功し、
+  `fmslikeui.bin` は 906,832 bytes、アプリ領域は 41% 空きだった。
+- 警告を無効化する設定変更は無く、Args の既定値、`render.cpp` の型と未使用引数、`main.cpp` の
+  デモ別コンパイル範囲を原因から修正している。文書の 3 件のずれと PLAN.md の履歴上の混在も解消されている。
+
+#### 実装の結果
+
+| 判断 | 実装 |
+|---|---|
+| Examples / Demos の無効化 | `sdkconfig.defaults` に `# CONFIG_LV_BUILD_EXAMPLES is not set` と `# CONFIG_LV_BUILD_DEMOS is not set` を追加し、既存の `sdkconfig`(git 管理外)も同じ値へ同期した。LVGL 本体の設定 (`third_party/lv_conf.h`) は変えていない |
+| 無効化が効く理由 | 最上位 CMakeLists は `LV_KCONFIG_IGNORE` で LVGL の Kconfig を設定としては使わないが、LVGL の `env_support/cmake/esp.cmake` はこの 2 つを読んでコンパイル対象を決める。Kconfig の既定値は両方 `y`。この理由を `sdkconfig.defaults` のコメントに書いた |
+| 省略可能な値 | `fms.h` の Args で、空に意味がある `Str` 6 つに `{}` を付けた。`FmsButtonArgs::text2`、`FmsValueArgs::unit`、`FmsFieldBoxArgs::text` / `unit`、`FmsDropdownArgs::text`、`FmsScratchpadArgs::message` |
+| 必須値 | Label / Button / Radio / Value / Text の `text` などには既定値を持たせず、省略すれば `-Wmissing-field-initializers` が出るままにした。この方針を `fms.h` の冒頭と、DESIGN.md「省略してよいフィールドには `{}` を書く」に書いた |
+| シムだけで出ていた警告 | `render.cpp` の 3 件。LVGL 9.5 の `lv_obj_get_index()` は `int32_t` を返すので、`uint32_t` へのキャストを外した (`-Wsign-compare`、比較結果は変わらない)。未使用の `ctx` は既存の書き方に合わせて `(void)ctx;` にした (`-Wunused-parameter`)。ESP-IDF は `-Wno-sign-compare -Wno-unused-parameter` を付けるので、実機では出ていなかった |
+| m0 デモだけで出ていた警告 | `main.cpp` の `thread_id()` は `FMSUI_DEMO_M0` では使われず、`-Wunused-function` になっていた。使う側と同じ `#if !defined(FMSUI_DEMO_M0)` で定義を囲んだ。既定のデモでは出ないので、`FMSUI_DEMO` を切り替えたビルドで初めて見つかった |
+| 警告を隠す設定 | CMakeLists、`sdkconfig`、コンパイルオプションの警告フラグには手を入れていない |
+| 文書 | `fms.h` 冒頭と DESIGN.md「FMS ウィジェット」を、`FmsDropdown` だけが StatefulWidget だという記述に訂正した。README の `tests/` に並行負荷テストを加えた。PLAN.md から後付けの注記(`fmsui_port_esp` を作らなかった理由、ebc7837 で追加)を消し、DESIGN.md の新しい節「実機用のポート層は作っていない」へ移した |
+
+**警告件数。** プロジェクト所有ソース(`third_party/`、`managed_components/`、ESP-IDF 本体の外)の `warning:` 行を数えた。
+
+| ビルド | 変更前 | 変更後 |
+|---|---|---|
+| シム (`build-sim`、WSL2 Ubuntu 22.04 / gcc 11.4、`-Wall -Wextra`) | 36 件。`-Wmissing-field-initializers` 33 件(demo 29、`fms.cpp` 4)と `render.cpp` 3 件 | 0 件。LVGL も含めたクリーンビルド全体で 0 件 |
+| ASan / UBSan (`build-asan`、`fmsui` 本体も計装) | 数えていない(コンパイラも警告フラグもシムと同じ) | 0 件。クリーンビルド全体で 0 件 |
+| 実機・既定デモ (ESP-IDF 5.5.4) | 33 件。すべて `-Wmissing-field-initializers`(9/9 のログ `build/log/idf_py_stdout_output_8824`) | 0 件。ESP-IDF 本体を含むクリーンビルド全体で 0 件 |
+| 実機・`FMSUI_DEMO` = `m0` / `m1` / `catalog` / `fplan` / `reorder` / 既定 | `fms.h` と `render.cpp` を直した後、`main.cpp` を直す前の時点で、`m0` だけ 1 件 | 6 通りとも 0 件。どれも `main.cpp` を再コンパイルしたビルドで確認した |
+
+シムの変更前の件数は、ソースを変える前にプロジェクト所有ターゲットのオブジェクト 23 個だけを消して再ビルドし、そのログから数えた。
+
+**Examples / Demos を除外した証拠。** 変更前は 9/9 の実機ビルド `build/` の値、変更後は新しいディレクトリ `build-clean/` のクリーンビルドの値。
+どちらも `compile_commands.json` を JSON として読み、ファイルのパスで分類して数えた。
+
+| | 変更前 (`build/`、9/9) | 変更後 (`build-clean/`) |
+|---|---|---|
+| コンパイル対象の総数 | 1852 | 1594 |
+| `third_party/lvgl/examples/` | 257 | 0 |
+| `third_party/lvgl/demos/` | 1 (`lv_demos.c`) | 0 |
+| `lvgl/src` / `fmsui` / `fmsui_fonts` / `main` + `demo` | 530 / 8 / 5 / 7 | 530 / 8 / 5 / 7 |
+
+総数の差 258 件は、examples と demos の合計とちょうど一致する。それ以外の分類の件数は変わっていない。
+`build-clean/config/sdkconfig.cmake` でも、`CONFIG_LV_BUILD_EXAMPLES` と `CONFIG_LV_BUILD_DEMOS` はどちらも空値で、ビルドログに examples / demos のコンパイル行は 0 件だった。
+ninja のステップ数は、9/9 のフルビルドのログが 1973、`build-clean/` が 1729 だった。ただし別の日の別の実行なので、この差 (244) は参考値にとどめ、除外の判定には使っていない。
+
+**ビルド時間(参考)。** `build-clean/` のクリーンビルドは 403.5 秒 (09:00:03〜09:06:47) だった。
+ただし 09:02:50 以降は、WSL でシムのクリーンビルドを並行して走らせていたため、単独で走らせたときより長く出ている。
+変更前との比較はしていない。
+
+**テストとデモ**
+
+- CTest は、通常設定と ASan / UBSan 設定のそれぞれで、クリーンビルドの後に `--repeat until-fail:20` で実行した。どちらも 3 件すべて成功した(所要時間は 4 秒と 12 秒)。
+- テストを直接実行した結果は、両設定とも `fmsui_test` 167 checks、`fmsui_interaction_test` 134 checks、`fmsui_request_frame_test` 34 checks で、いずれも 0 failures。
+- 変更前のソースでヘッドレス PNG を 9 枚撮った。内訳は 6 デモ、`reorder --rows 40`、README の catalog タップ連鎖、pages へのタップ。変更後の `build-sim` と `build-asan` でも同じ 9 枚を撮り、合計 18 組をバイト比較して、すべて一致した。9 枚どうしは互いに異なることも確認してある。ASan 版のデモ実行で、サニタイザの報告は 0 件だった。
+- pages へのタップ (`--tap 100,97`) は画面を変えず、pages と同じ PNG になった。この組で分かるのは「表示が回帰していない」ことまでで、タップによる表示の変化は確かめていない。タップ連鎖で表示が変わることは、catalog の組で確認した。
+- `main.cpp` は実機専用で、シムもテストもコンパイルしない。そのため `main.cpp` を直した後にシム側の再検証はしていない。
+
+**検証コマンド**
+
+```bash
+# WSL: シムと ASan / UBSan
+cmake --build build-sim  --clean-first
+cmake --build build-asan --clean-first
+ctest --test-dir build-sim  --output-on-failure --repeat until-fail:20
+ctest --test-dir build-asan --output-on-failure --repeat until-fail:20
+./build-sim/fmsui_sim --demo catalog --shot catalog.png   # m0 / m1 / pages / reorder / fplan も同じ
+```
+
+```bat
+REM Windows: 実機
+tools\idf.bat -B build-clean build
+tools\idf.bat -B build-clean -DFMSUI_DEMO=m0 build
+REM m1 / catalog / fplan / reorder と、既定 (-DFMSUI_DEMO=) も同じ
+```
+
+**実装前に確認して決めたこと**
+
+- 既定値 `{}` は、空に意味がある値すべてに付ける。警告の出ていた 5 つに、`FmsScratchpadArgs::message` を加える。
+- `FmsFieldBoxArgs::text` は省略可能にする(`empty` のときは使わないため)。
+- PLAN.md の後付けの注記は消して、DESIGN.md へ移す。
+- 実機のクリーンビルドは `build/` に触れず、別ディレクトリ `build-clean/` で変更後の分だけ取る。
+
+**確認せずに決めたこと**
+
+- `render.cpp` と `main.cpp` の警告は、計画にあった既知の一覧には入っていなかった。どちらもプロジェクト所有ソースの警告なので、同じ方針で原因から直した。
+- 実機の警告確認は、既定のデモだけでなく、`FMSUI_DEMO` の 6 通りすべてで行った。
+- DESIGN.md のポート層の節は、「触れないもの / まだ無いもの」の直前に置いた。
+- `build-clean/` は消さずに残してある(`/build*/` なので git の管理外)。その `FMSUI_DEMO` は既定に戻してある。
+
 ## 計画中・未実装
 
 いまのところ無し。次の判断が決まったらここに書く。
