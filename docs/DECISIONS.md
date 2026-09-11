@@ -1005,6 +1005,26 @@ D1〜D4 はすべて元に戻した後、再ビルドと component 検査が再�
 | `device-build (esp32p4)` 相当 | `device_build.sh` rc 0(229 秒)。6 構成とも `warning:` 0 件、bin サイズは 6 構成とも変更前と同じ、コンパイル対象 1594 件、Examples / Demos 0 / 0 件、lock 不変。compile commands に `LV_USE_SDL` は 0 件 |
 | `consumer (esp-idf, esp32p4)` 相当 | `consumer_idf.sh` rc 0(81 秒)、`warning:` 0 件。`fmsui_consumer.bin` 600,720 bytes は変更前と同じ。component 検査も同じ結果 |
 
+**GitHub-hosted run #5: 5 job すべて成功**
+
+`603f82e`(SDL を opt-in にした commit)の push による
+[run #5 (34557528871)](https://github.com/Lausiv1024/FmsLikeUI/actions/runs/34557528871)
+(2026-09-11 03:11〜03:21 UTC)。run 全体は 570 秒。
+
+| job | 結果 | 所要時間 | 内訳 |
+|---|---|---:|---|
+| `host (debug)` | success | 100 s | CTest 3/3 成功、6 デモ成功、`warning:` 0 件 |
+| `host (asan-ubsan)` | success | 118 s | `fmsui` 8/8 ソースが計装済み、CTest 3/3 成功、6 デモ成功、`warning:` 0 件 |
+| `consumer (host)` | success | 72 s | 依存導入 15 s(Ninja だけ)、ステージ・configure・ビルド・CTest 40 s。CTest 1/1 成功、`warning:` 0 件、ログに SDL2 の文字列は 0 件。CMake 3.31.6 / gcc 11.4.0 |
+| `device-build (esp32p4)` | success | 567 s | 6 構成の bin サイズは run #4 とローカルと同じ。Examples / Demos 0 / 0 件、`warning:` 0 件 |
+| `consumer (esp-idf, esp32p4)` | success | 362 s | コンテナの初期化 102 s、ビルド 245 s。`fmsui_consumer.bin` 0x93220 = 602,656 bytes / 空き 43%(run #4 と同じ)、`warning:` 0 件 |
+
+- component 検査の表と bin サイズの表は job summary と `summary.md` へ出力し、ジョブログには出さない。
+  `consumer_idf.sh` は検査に失敗すると非 0 で終わるので、job の成功は検査の通過を意味する。
+- 前章で「GitHub 上でまだ通していない」とした経路のうち、**失敗時の artifact の保存**は run #4 の `consumer (host)` で
+  実際に動いた(「Upload failure evidence」が success)。`pull_request` と `workflow_dispatch` による起動、`concurrency` による
+  キャンセル、timeout による停止は、consumer の 2 job でもまだ通していない。
+
 **検証コマンド**
 
 ```bash
