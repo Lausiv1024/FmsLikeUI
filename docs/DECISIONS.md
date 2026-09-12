@@ -1072,11 +1072,9 @@ bash tools/ci/consumer_idf.sh ci-out/consumer-idf
 - 既存 job と同じく、検査は `tools/ci/` のスクリプトにし、workflow にはインラインで書かなかった。job summary の文言は英語にした。
 - `/ci-out/`、`/consumers/*/build*/`、`/consumers/esp-idf/dependencies.lock` を `.gitignore` に加えた。
 
-## レビュー待ち
-
 ### 2026-09-11: 公開 API 境界の物理的な分離
 
-**状態: レビュー待ち (2026-09-11)。実装と検証の結果を章末に記録した。完了条件のチェックはレビューで行う。**
+**状態: 実装済み (2026-09-12)。完了条件 11 件をレビューで確認済み。**
 
 外部 consumer によってソース組み込みの利用契約は確認できたが、公開 API と内部実装の境界は
 まだ文書上の分類にとどまっている。現在の `<fmsui/fmsui.h>` は `arena.h` と `element.h` を直接
@@ -1179,17 +1177,17 @@ FmsApp内部状態の所有場所を記録する。READMEの利用導線は変�
 
 #### 実装完了の条件
 
-- [ ] `arena.h`と`element.h`がPUBLIC include領域から外れ、framework内部だけのinclude pathに置かれる。
-- [ ] `<fmsui/fmsui.h>`が通常向けと高度向けの公開APIだけを提供し、内部ヘッダーを直接includeしない。
-- [ ] Widgetのarena割り当て、virtual destructor、2世代の寿命が公開の`ArenaObject`なしで維持される。
-- [ ] BuildContextとFmsAppの公開定義がElement、BuildOwner、BuildArenasなどの内部定義を要求しない。
-- [ ] 通常向け7、高度向け2、umbrellaの公開ヘッダー10 TUが単独で警告なくコンパイルできる。
-- [ ] consumerで旧`<fmsui/arena.h>`と`<fmsui/element.h>`が利用できないことを機械判定できる。
-- [ ] host consumerのCTest 1/1と10 checksが成功する。
-- [ ] 通常／sanitizerのCTest 3/3と6デモが成功し、`fmsui`本体の計装と報告0件を確認できる。
-- [ ] ESP-IDF consumerと既存device-build 6構成が成功する。
-- [ ] `docs/USING.md`、`docs/DESIGN.md`、必要なREADME記述が新しい境界と一致する。
-- [ ] GitHub Actionsの5 jobが成功し、実装結果とレビュー結果がこの章へ記録される。
+- [x] `arena.h`と`element.h`がPUBLIC include領域から外れ、framework内部だけのinclude pathに置かれる。
+- [x] `<fmsui/fmsui.h>`が通常向けと高度向けの公開APIだけを提供し、内部ヘッダーを直接includeしない。
+- [x] Widgetのarena割り当て、virtual destructor、2世代の寿命が公開の`ArenaObject`なしで維持される。
+- [x] BuildContextとFmsAppの公開定義がElement、BuildOwner、BuildArenasなどの内部定義を要求しない。
+- [x] 通常向け7、高度向け2、umbrellaの公開ヘッダー10 TUが単独で警告なくコンパイルできる。
+- [x] consumerで旧`<fmsui/arena.h>`と`<fmsui/element.h>`が利用できないことを機械判定できる。
+- [x] host consumerのCTest 1/1と10 checksが成功する。
+- [x] 通常／sanitizerのCTest 3/3と6デモが成功し、`fmsui`本体の計装と報告0件を確認できる。
+- [x] ESP-IDF consumerと既存device-build 6構成が成功する。
+- [x] `docs/USING.md`、`docs/DESIGN.md`、必要なREADME記述が新しい境界と一致する。
+- [x] GitHub Actionsの5 jobが成功し、実装結果とレビュー結果がこの章へ記録される。
 
 #### 計画時に確認して決めたこと
 
@@ -1274,7 +1272,29 @@ T1〜T3 は最初、元に戻したファイルの mtime が壊したファイ�
 
 **GitHub-hosted run**
 
-この実装の commit を push した後の run を、ここに記録する。
+[CI run #7](https://github.com/Lausiv1024/FmsLikeUI/actions/runs/34569845530) は、`master` への
+commit `c39f060` (`Keep the arena and the element tree out of the public headers`) の push で起動し、
+2026-09-11 15:25 JST に開始、9 分 26 秒で成功した。
+
+| job | 結果 |
+|---|---|
+| `host (debug)` | success |
+| `host (asan-ubsan)` | success |
+| `consumer (host)` | success |
+| `consumer (esp-idf, esp32p4)` | success |
+| `device-build (esp32p4)` | success |
+
+**レビュー結果** (2026-09-12)
+
+- `d5242f1..c39f060` の 24 ファイルを確認し、`git diff --check` は指摘 0 件だった。
+- 公開領域には 10 ヘッダーだけが残り、内部 2 ヘッダーは `src/internal/fmsui/` にあり、通常 CMake と
+  ESP-IDF のどちらでも consumer へ内部 include path が伝播しないことをソースと検査結果の両方で確認した。
+- 現在の commit を WSL2 で再検証し、通常設定の CTest 3/3 (199 / 134 / 34 checks、失敗 0)、独立 host
+  consumer の CTest 1/1 と内部ヘッダー拒否 7 項目、sanitizer 設定の本体 8/8 ソース計装・CTest 3/3・
+  報告 0 件、通常／sanitizer それぞれの 6 デモ描画が成功した。
+- `shutdown()` 後の再初期化でフレーム所有スレッドの記録が残る点も確認したが、変更前の `FmsApp` でも
+  `BuildOwner` は singleton のメンバーとして同じ寿命を持っており、今回の差分が導入した回帰ではない。
+  今回の公開境界分離に対するブロッキング指摘は無い。
 
 **検証コマンド**
 
