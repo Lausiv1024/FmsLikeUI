@@ -1,262 +1,192 @@
-# FmsLikeUI — 実装計画
+# FmsLikeUI — 現行ロードマップ
 
-M5Stack Tab5 (ESP32-P4) 向け、Airbus FMS 風デザインの宣言的 UI フレームワーク。
+更新: 2026-09-12
 
----
+## 1. この文書の役割
 
-## 1. 前提と確定事項
+この文書は、FmsLikeUI の**現在地と今後の作業順**を示す。
+当初の M0〜M5 実装計画は、実装、実機計測、consumer 検証、CI 導入まで進み、現状と合わない記述が増えたため、
+2026-09-12 に現行ロードマップへ置き換えた。
 
-### ターゲット環境
+文書の役割は次のように分ける。
 
-| 項目 | 値 | 根拠 |
-|---|---|---|
-| SoC | ESP32-P4NRW32 (RISC-V dual 360MHz) | M5 公式仕様 |
-| PSRAM | 32MB / HEX mode / 200MHz | M5Tab5-UserDemo の sdkconfig |
-| Flash | 16MB | 同上 |
-| Display | 5" 1280x720 IPS / MIPI-DSI 2レーン / RGB565 | esp-bsp `m5stack_tab5` |
-| Panel/Touch | rev1: ILI9881C + GT911 / rev2: ST7123 (タッチ一体) | BSP が I2C プローブで自動判別 |
-| ESP-IDF | **v5.5.4** | BSP の宣言は `>=5.4` だが、依存する `espressif/usb` が IDF 5.5 の HAL を呼ぶため実質 5.5 以上が必須(→ [M0-NOTES](M0-NOTES.md)) |
-| BSP | `espressif/m5stack_tab5` ^1.2.0 | Component Registry |
-| LVGL | **9.2.2 から開始** | M5 公式ファームと同一。PPA 描画が必要になったら 9.4 へ引き上げ検討 |
+| 文書 | 役割 |
+|---|---|
+| [PLAN.md](PLAN.md) | 現在地、次に判断・実装すること、未着手候補 |
+| [DECISIONS.md](DECISIONS.md) | 合意した設計判断、実装状況、完了条件と検証記録 |
+| [DESIGN.md](DESIGN.md) | 現在の内部設計と、採用しなかった方式 |
+| [USING.md](USING.md) | 外部プロジェクトから使うときの公開契約 |
+| [PERF.md](PERF.md) | シミュレータと実機の性能測定 |
+| [M0-NOTES.md](M0-NOTES.md) | Tab5 のブリングアップで確認した事実 |
 
-### 設計方針(合意済み)
+方針が決まったら、実装前に `DECISIONS.md` の「計画中・未実装」へ完了条件付きで記録する。
+実装しただけでは完了にせず、「レビュー待ち」からレビューを経て「実装済み」へ移す。
 
-1. **アーキテクチャ**: LVGL 9 をバックエンドにし、その上に Flutter 同型の 3 層を自前実装。
-2. **PC シミュレータを作る**: SDL2 + LVGL で 1280x720 を WSL/Windows 上に表示。UI コードは実機と完全共有。
-3. **フォント**: 当面 B612 Mono の英数字。ただし**フォント解決を最初から抽象化**し、後から日本語グリフ(UDEV Gothic 等)をフォールバックチェーンで足せるようにする。最終選定はシミュレータ上で実物を見比べて決める。
-4. **ゴール**: 汎用フレームワーク本体が主成果物。実証として `ACTIVE/PERF` `ACTIVE/INIT` のデモ画面を再現する。
+## 2. ゴール
 
----
+FmsLikeUI の主成果物は、**FMS 風の視覚表現を持つ UI を組み立てられる、組込み向け宣言的 UI フレームワーク**である。
 
-## 2. アーキテクチャ
+- C++20 で Widget → Element → RenderObject の 3 層モデルを提供する。
+- 制約ベースのレイアウトを行い、描画、フォント、dirty area、ポインタ入力は LVGL に任せる。
+- フレームワーク本体は ESP-IDF や特定 BSP に依存せず、通常の CMake と ESP-IDF component の両方で使えるようにする。
+- 同じ UI コードを host シミュレータと M5Stack Tab5 で使えるようにする。
+- 公開 API と内部実装を物理的に分離し、外部 consumer から利用契約を継続的に検証する。
 
-### 2.1 なぜこの構成か
+FMS アプリケーションそのものを作ることはゴールではない。`demo/` の画面は、レイアウト、描画、入力、差分更新、
+性能、実機ビルドを確認するための fixture であり、業務機能やドメインロジックを追加しない。
 
-FMS 風 UI が必要とする描画要素は矩形・罫線・テキスト・単純な多角形(タブの斜めカット)だけで、LVGL の豊富なウィジェット群はほぼ不要。それでも LVGL を土台に据えるのは、自前で書くと重い以下を丸ごと引き受けてくれるため:
+## 3. 非目標
 
-- ディスプレイ flush / DMA / ダブルバッファ / ティアリング対策(esp_lvgl_port + BSP)
-- **dirty area 管理と部分再描画**(1280x720 の全画面再描画は PSRAM 帯域的に非現実的)
-- アンチエイリアス付きフォントラスタライズ(`lv_font`, 4bpp)
-- タッチ入力の取り込みとヒットテスト
+- 航法、飛行計画計算、機体データ管理など、FMS アプリケーションのドメイン機能
+- デモアプリを製品として完成させるための画面・機能追加
+- Flutter の全機能を再現すること
+- BSP、display、touch、回転、PSRAM 設定など、ボード初期化のフレームワークへの取り込み
+- 利用例が無い段階で clipping、scroll、animation、GlobalKey、UI task queue などを先回りして追加すること
+- 内部ヘッダーや公開型の ABI を、決定なしに互換保証すること
 
-一方 LVGL の `lv_obj` ツリーを直接組むと宣言的にならないので、**LVGL のレイアウト機能(flex/grid)は一切使わず**、Flutter と同じ制約ベースのレイアウトを自前で回し、結果の絶対座標だけを `lv_obj_set_pos/set_size` で流し込む。
+## 4. 現在の基準
 
-### 2.2 3層モデル
+| 項目 | 現在の状態 |
+|---|---|
+| フレームワーク | `components/fmsui/`。LVGL のみに依存する C++20 static library / ESP-IDF component |
+| 描画基盤 | LVGL v9.5.0 を `third_party/lvgl` submoduleで固定。実機と host で `third_party/lv_conf.h` を共有 |
+| 実機基準 | M5Stack Tab5 (ESP32-P4)、ESP-IDF 5.5.4。BSP と managed components は `dependencies.lock` で固定 |
+| host | SDL2 シミュレータ、1280x720 の headless PNG、ポインタ入力の合成 |
+| 公開 API | `components/fmsui/include/fmsui/` の 10 ヘッダー。通常向け 7、高度・診断向け 2、umbrella 1 |
+| 内部実装 | `arena.h` と `element.h` は `components/fmsui/src/internal/fmsui/`。consumer へ include path を渡さない |
+| メモリ | Widget は 2 面の bump arena、Element / State / RenderObject は永続。`shutdown()` で tree、両 arena、style cache を解放 |
+| 更新 | `setState()` と thread-safe な `requestFrame()`。フレーム単位で全 Widget tree を再構築し、RenderObject / LVGL 更新は差分化 |
+| フォント | 利用側が `lv_font_t` をテーマへ渡す。`components/fmsui_fonts` の B612 Mono は任意依存 |
+| 外部利用 | 通常 CMake と ESP-IDF local component / Git submodule の source integration を consumer で検証 |
+| 自動検証 | host 3 CTest、ASan / UBSan / LeakSanitizer、6デモ、host / ESP-IDF consumer、ESP32-P4 6構成ビルド |
+| CI | GitHub Actions 5 job。host debug、host sanitizer、host consumer、ESP-IDF consumer、device-build |
 
-```
-  Widget          immutable / 使い捨て / build() で毎回生成
-    │             Column, Row, Text, Container, GestureDetector, FmsFieldBox ...
-    │  createElement()
-    ▼
-  Element         永続 / 差分検出(型 + Key で比較)/ State を保持
-    │             StatelessElement, StatefulElement, RenderObjectElement
-    │  createRenderObject() / updateRenderObject()
-    ▼
-  RenderObject    永続 / レイアウト(BoxConstraints↓ Size↑)と描画
-    │             RenderFlex, RenderPadding, RenderText, RenderDecoratedBox ...
-    │  paint()
-    ▼
-  lv_obj_t        LVGL のオブジェクト。描画を伴う葉ノードにだけ生成
-```
+公開 API の正確な分類、所有範囲、ライフサイクル、スレッド境界、確認済み環境は `USING.md` を正とする。
+テスト数や binary size、CI run の時点値は `DECISIONS.md` に残し、このロードマップへ固定値として重複させない。
 
-**LVGL オブジェクトの節約**: `Column` / `Padding` / `Align` のような**レイアウト専用 RenderObject は `lv_obj` を作らない**。`lv_obj` を持つのは実際にピクセルを出すもの(テキスト、枠付きボックス、線、カスタム描画)だけで、親には「最も近い `lv_obj` を持つ祖先」を選び、そこからの相対座標を与える。FMS の 1 画面で `lv_obj` は 100〜300 個程度に収まる想定。
+## 5. 完了済みの基盤
 
-### 2.3 メモリ管理(ここが C++ 版の肝)
+### 5.1 実機・シミュレータ共通基盤
 
-Flutter の Widget は GC 前提の使い捨てオブジェクト。C++ でこれを素直に再現するために **ダブルバッファ・アリーナ**を使う:
+- Tab5 の display、PPA 回転、GT911 touch、部分描画を実機で確認した。
+- SDL2 シミュレータと headless PNG 出力を用意し、実機と同じ UI コードを使えるようにした。
+- LVGL と ESP-IDF / BSP の組み合わせを固定し、ブリングアップと性能の実測を文書化した。
 
-- `build()` 中の Widget は arena から bump 確保する。
-- Element は差分検出のために「前回の Widget」を保持する必要があるため、arena を 2 面持ち、フレームごとにスワップ。新 arena に build → 旧 arena の Widget と diff → スワップして旧面を reset。
-- Widget が `std::function`(`onTap` 等)を持つので、arena reset 時にデストラクタを走らせるための dtor リストを arena が持つ。
-- Element / State / RenderObject は永続オブジェクトで、通常の `unique_ptr` 管理。
+### 5.2 宣言的 UI フレームワーク
 
-これにより `build()` 毎回呼び出しのコストは実質「bump ポインタを進めるだけ」になり、フラグメンテーションも起きない。
+- Widget / Element / State / RenderObject、制約ベースレイアウト、key による再突合を実装した。
+- 基本 Widget、FMS 風 Widget、theme、任意フォント、gesture、scratchpad / keypad、固定窓 paging を実装した。
+- Widget arena の 2 世代寿命、virtual destructor、Element tree、shared style の解放順を自動テストで固定した。
 
-### 2.4 使う側のコード(目標とする書き味)
+### 5.3 操作・並行性・診断
 
-```cpp
-class PerfPage : public StatefulWidget {
- public:
-  State* createState() override { return new PerfPageState; }
-};
+- LVGL pointer の press / hold / release を通す headless 操作テストを用意した。
+- `requestFrame()` の複数 producer、高頻度要求、取りこぼし、終了条件を独立テストで検証した。
+- frame / refresh / style cache の snapshot と simulator diagnostics を実装した。
+- 通常設定と sanitizer 設定で、レイアウト、入力、並行負荷、6デモを継続検証できるようにした。
 
-class PerfPageState : public State<PerfPage> {
-  int tab_ = 0;
-  int v1_ = 153, vr_ = 155, v2_ = 160;
+### 5.4 外部利用と継続的インテグレーション
 
-  Widget* build(BuildContext& ctx) override {
-    const auto& t = FmsTheme::of(ctx);
-    return new FmsPanel{{
-      .title = "ACTIVE/PERF",
-      .child = new Column{{
-        .cross = CrossAxis::Start,
-        .children = {
-          new FmsTabBar{{
-            .tabs = {"T.O", "CLB", "CRZ", "DES", "APPR", "GA"},
-            .index = tab_,
-            .onChanged = [this](int i) { setState([&] { tab_ = i; }); },
-          }},
-          new SizedBox{{ .height = 12 }},
-          new Row{{ .children = {
-            new FmsLabel{{ .text = "V1" }},
-            new SizedBox{{ .width = 8 }},
-            new FmsFieldBox{{
-              .text  = fmt("%d", v1_),
-              .unit  = "KT",
-              .color = t.cyan,          // 操作可能な入力値
-              .onTap = [this] { editV1(); },
-            }},
-          }}},
-          new Expanded{ new Spacer{} },
-        },
-      }},
-    }};
-  }
-};
-```
+- host と ESP-IDF の独立 consumer を用意し、リポジトリ本体の `main/`、`demo/`、BSP、任意フォントへ
+  偶然依存しないことを検査した。
+- 公開ヘッダー 10 個の単独コンパイルと、旧内部ヘッダーを consumer から include できないことを機械判定した。
+- GitHub Actions で host、sanitizer、consumer、ESP32-P4 6構成の検証を自動化した。
+- 公開 API と内部ヘッダーを物理的に分離した。
 
-C++20 の designated initializer で名前付き引数風に書ける。ネストは Flutter とほぼ同型になる。
+各項目の判断、変更内容、検証結果は `DECISIONS.md` の「実装済み」を参照する。
 
----
+## 6. 次期計画: 配布方法と互換性方針
 
-## 3. ディレクトリ構成
+**状態: 今後の計画。方針未決定・未実装。**
 
-```
-FmsLikeUI/
-├── CMakeLists.txt              # ESP-IDF プロジェクト定義
-├── sdkconfig.defaults          # esp32p4 / PSRAM HEX 200M / LVGL / partial buffer
-├── docs/
-│   ├── PLAN.md                 # 本書
-│   └── DESIGN.md               # 詳細設計(M1 で追記)
-├── main/                       # 実機エントリポイント(ESP-IDF)
-│   └── main.cpp                #   BSP init → fmsui::runApp(new DemoApp)
-├── components/
-│   ├── fmsui/                  # ★ フレームワーク本体(ESP-IDF 非依存 / LVGL のみ依存)
-│   │   ├── include/fmsui/
-│   │   │   ├── foundation/     # Size, Offset, Rect, EdgeInsets, Color, Key, Arena
-│   │   │   ├── widgets/        # Widget, Element, State, BuildOwner, BuildContext
-│   │   │   ├── render/         # RenderObject, RenderBox, BoxConstraints, PaintContext
-│   │   │   ├── basic/          # Text, Container, Row, Column, Stack, GestureDetector ...
-│   │   │   ├── theme/          # FmsTheme, FmsColors, FmsTypography, InheritedWidget
-│   │   │   └── fms/            # FMS 風ウィジェット群
-│   │   └── src/
-│   ├── fmsui_port_esp/         # 実機ポート(BSP / esp_lvgl_port / タッチ / tick)
-│   └── fmsui_fonts/            # 生成済み lv_font C 配列
-├── sim/                        # PC シミュレータ(素の CMake + SDL2 + LVGL)
-│   └── main_sim.cpp
-├── demo/                       # デモアプリ(実機・シム共有)
-│   ├── perf_page.cpp
-│   ├── init_page.cpp
-│   └── font_gallery.cpp        # フォント比較画面
-├── tests/                      # レイアウト/差分検出のユニットテスト(PC, doctest)
-└── tools/
-    └── gen_fonts.py            # lv_font_conv 呼び出し(サイズ・グリフ範囲を一元管理)
-```
+公開 API の物理境界と consumer 検証が整ったため、次は「何を正式な配布物とし、どの互換性を約束するか」を決める。
+ここでは忘れないために判断事項を残す。結論と完了条件は、着手時に `DECISIONS.md` へ記録してから実装する。
 
-`components/fmsui` は **ESP-IDF の component としても、素の CMake ライブラリとしてもビルドできる** ように CMakeLists を書く(`IDF_TARGET` の有無で分岐)。
+### 6.1 決めること
 
----
+1. **正式な導入方法**
+   - 現在検証している source integration (`add_subdirectory`、ESP-IDF local component / Git submodule)を
+     当面の正式手段とするか。
+   - ESP Component Registry、CMake install package、GitHub Release、source archive のどこまでを提供するか。
+   - ビルド済み library を配布対象にするか。対象にする場合、toolchain、LVGL、target、ABI をどう固定するか。
 
-## 4. デザイントークン(参考画像から抽出)
+2. **バージョン方針**
+   - `v0.x` から SemVer を始めるか、安定版の条件を別に設けるか。
+   - 公開 10 ヘッダーのソース互換、動作互換、ABI 互換のうち、どれを保証対象にするか。
+   - `render.h` / `refresh.h` の高度・診断 API を通常 API と同じ安定度にするか。
+   - 破壊的変更、deprecated 期間、移行手順をどう記録するか。
 
-実装時にシミュレータ上で微調整する前提の初期値:
+3. **バージョンの表現**
+   - Git tag、CMake project version、ESP-IDF component metadata、公開 macro / accessor のどれを正とするか。
+   - `CHANGELOG` を置くか。変更を API、内部、検証、device configuration に分けるか。
 
-| ロール | 用途 | 初期値 |
-|---|---|---|
-| `background` | 画面全体 | `#000000` |
-| `surface` | パネル背景 | `#14181C` |
-| `border` | 罫線・枠 | `#4A5560` |
-| `label` | 静的ラベル(白) | `#D8DCE0` |
-| `cyan` | **操作可能な入力値** | `#29C5E8` |
-| `green` | 計算値・実測値・アクティブ | `#1AE01A` |
-| `amber` | 注意・要アクション | `#FF9E1B` |
-| `magenta` | 制約値 | `#E060E0` |
-| `button` | 押しボタン面 | `#2A3038` |
-| `titlebar` | `ACTIVE/PERF` の帯 | `#C8D0C8` (背景) + 黒文字 |
+4. **配布物の中身**
+   - `components/fmsui`、任意の `fmsui_fonts`、LVGL の扱い、設定例、ライセンス、導入文書をどうまとめるか。
+   - demo と test fixture を配布物に含めるか。含めても、製品機能や依存として扱わないことをどう保証するか。
+   - B612 Mono の OFL、LVGL の MIT、その他同梱物の notice をどう検査するか。
 
-色の意味付け(シアン=パイロットが入力する値、緑=システムが計算した値、アンバー=注意喚起)は Airbus の実機の規約に沿っており、これを `FmsTheme` のセマンティックな名前として API に出す。
+5. **リリース検証**
+   - tag / release candidate から、host と ESP-IDF consumer をクリーンに構築できることをどう検証するか。
+   - GitHub Actions の release job、artifact、checksum、署名、再現性をどこまで求めるか。
+   - device build と実機確認を、リリース必須条件にするか別の手動 gate にするか。
 
-### FMS ウィジェット群
+### 6.2 この計画で守る前提
 
-- `FmsScaffold` — 黒背景 + 上部の FMS ヘッダ + 下部の `MSG LIST` 行
-- `FmsPanel` — `ACTIVE/PERF` のようなタイトル帯付きの枠
-- `FmsLabel` / `FmsValue` — 白ラベル / 色分けされた値 + 単位(小さめ)
-- `FmsFieldBox` — 枠付き入力値。タップでスクラッチパッドを開く
-- `FmsButton` — グレーの押しボタン(`POS MONITOR`, `IRS`, `DEPARTURE` …)
-- `FmsDropdown` — `▼` 付き(`ACTIVE ▼`, `POSITION ▼`, `DATA ▼`)
-- `FmsTabBar` — **斜めカットの台形タブ**(`T.O` / `CLB` / `CRZ` / `DES` / `APPR` / `GA`)。カスタム描画(多角形 + 罫線)が必要
-- `FmsRadio` — `TOGA` / `FLEX` の丸ラジオ
-- `FmsDivider` — 水平罫線
-- `FmsScratchpad` + `FmsKeypad` — タッチ機なので MCDU のキーパッドをソフトキーで再現
+- 互換性の候補は公開 10 ヘッダーと文書化した動作に限り、`src/internal/` は対象にしない。
+- `fmsui` 本体は LVGL のみに依存し、BSP、demo、`fmsui_fonts` を必須依存へ戻さない。
+- demo に製品機能を足して配布品質を示すのではなく、独立 consumer と自動検査を証拠にする。
+- 配布方式を増やす前に、維持コストと利用者が実際に必要とする導入経路を確認する。
+- 方針未決定の間は、`USING.md` に記載した source integration だけを確認済み経路として扱う。
 
----
+## 7. 未着手候補
 
-## 5. マイルストーン
+次は必要性が明確になってから計画する。現時点では実装約束ではない。
 
-### M0 — 基盤と2ターゲットビルド(最初のリスク潰し)
+### 7.1 ライフサイクル契約の追加整理
 
-- ESP-IDF プロジェクト骨格 + `espressif/m5stack_tab5` BSP 導入
-- 実機で LVGL の「Hello」が 1280x720 で出て、タッチが効くところまで
-- SDL2 シミュレータで同じ LVGL 画面が PC に出るところまで
-- **要検証(最大のリスク)**: パネルのネイティブ向きは 720(H)x1280(V) の**縦**。横長 UI を出すには回転が要る。BSP / esp_lvgl_port がどう扱っているか、ソフト回転なら性能が出るか、`CONFIG_LVGL_PORT_ENABLE_PPA` のハード回転が使えるかを実機で確認する。ここで詰まると設計に影響する。
-- 描画バッファ構成の初期決定(Espressif の実測では PSRAM 上の巨大バッファは遅く、画面の 10〜25% の部分バッファが定石)
+`shutdown()` 後に同じプロセスで `init()` し直す経路は検証済みだが、前セッションと異なる frame thread へ
+所有権を移す場合の `BuildOwner` 再バインドは別契約として決めていない。必要なら、対応範囲、thread-id callback の寿命、
+再初期化テストを先に定義する。
 
-**完了条件**: 実機とシムの両方で同一の LVGL 画面が出て、fps とタッチ応答が測れている。
+### 7.2 検証ゲートの拡張
 
-### M1 — コアフレームワーク
+- 実機への自動 flash と物理 touch の回帰試験
+- PNG の golden image / 見た目比較
+- ThreadSanitizer の常設化
+- 長時間の host / 実機耐久試験
+- 定期実行による依存更新・toolchain drift の検出
 
-- `foundation`: `Size` / `Offset` / `Rect` / `EdgeInsets` / `Color` / `Key` / `Arena`
-- `Widget` / `Element` / `State` / `setState` / `BuildOwner`(dirty リスト → フレーム単位で再ビルド)
-- `RenderBox` / `BoxConstraints` / レイアウトパス(制約が下り、サイズが上がる)
-- LVGL バックエンド: `RenderText`, `RenderDecoratedBox`, `RenderCustomPaint`
-- 基本ウィジェット: `Text`, `Container`, `Padding`, `SizedBox`, `Align`, `Center`, `Row`, `Column`, `Expanded`, `Flexible`, `Spacer`, `Stack`, `Positioned`, `GestureDetector`
-- **PC 側でレイアウトのユニットテスト**(実機不要で回帰を止められる)
+これらは現在の CI の対象外である。導入するときは、誤検出、実行時間、runner / 実機管理まで含めて判断する。
 
-**完了条件**: `setState` でカウンタが増える画面が、シムと実機の両方で同一コードから動く。
+### 7.3 UI 機能の追加
 
-### M2 — テーマとフォント
+clipping、scroll、animation、focus、GlobalKey、UI task queue、追加 gesture などは、具体的な framework consumer の
+要求が出た時点で優先順位を付ける。デモを充実させること自体を追加理由にしない。
 
-- `InheritedWidget` + `FmsTheme::of(context)`
-- フォント抽象(サイズ×ウェイト → `lv_font_t*` の解決、フォールバックチェーン)
-- `tools/gen_fonts.py` で B612 Mono を複数サイズ(16/20/24/28/32px, 4bpp AA)にビットマップ化
-- **シミュレータにフォント比較画面(`font_gallery`)を出し、B612 Mono / JetBrains Mono / IBM Plex Mono / Martian Mono を同じ FMS 画面で並べて見比べて決定**
+### 7.4 対応環境の拡張
 
-**完了条件**: フォントが決まり、`FmsTheme` 経由で全ウィジェットに効いている。
+M5Stack Tab5 以外の board、別 LVGL / ESP-IDF 版、別 compiler、install 済み CMake package は現在の確認範囲外である。
+対応を広げる場合は、その環境の consumer と CI / 実機証拠を追加する。
 
-### M3 — FMS ウィジェット群
+## 8. 変更ごとの検証ゲート
 
-第4節のウィジェットを実装。台形タブとスクラッチパッド/キーパッドが山場。
+| 変更 | 最低限の確認 |
+|---|---|
+| framework の実装 | 通常／sanitizer の host build、CTest 3/3、sanitizer 報告 0、6デモ headless 描画 |
+| 公開 API / build system | 上記に加え、公開10ヘッダー、内部ヘッダー拒否、host / ESP-IDF consumer |
+| LVGL / ESP-IDF / component 更新 | 固定参照の更新、ESP32-P4 6構成、LVGL examples / demos の除外、警告0、必要な実機確認 |
+| 入力・描画・device configuration | host の操作／描画確認と、変更した挙動に対応する実機確認を別々に記録 |
+| 文書だけ | リンク、現行ソースとの一致、`git diff --check`。実装済みの事実を変更する場合は根拠も照合 |
 
-**完了条件**: シムのウィジェットカタログ画面に全部並び、タッチで反応する。
+ビルド成功、host の描画、実機動作は同じ証拠ではない。完了記録では、どこまで確認したかを分けて書く。
 
-### M4 — デモ画面
+## 9. 次に行うこと
 
-`ACTIVE/PERF (T.O)` と `ACTIVE/INIT` を参考画像に寄せて再現。2 面を左右に並べるレイアウトも。値のタップ → スクラッチパッド入力 → 反映まで通す。
+次の設計作業は、第6節の配布方法と互換性方針である。
 
-**完了条件**: 実機で参考画像と並べて遜色ないスクリーンショットが撮れる。
+1. 想定する利用者と必要な導入経路を確認する。
+2. 配布形式、互換性、version、release gate の選択肢を比較する。
+3. 合意した方針と実装完了条件を `DECISIONS.md` の「計画中・未実装」へ記録する。
+4. その後に、必要な metadata、package、CI、文書を実装する。
 
-### M5 — 性能と仕上げ
-
-- fps / flush 時間 / ヒープ・PSRAM 使用量の計測
-- 部分バッファサイズ、`LV_DEF_REFR_PERIOD`、ダブルバッファ構成のチューニング
-- 足りなければ LVGL 9.4 の PPA 描画ユニット(experimental)を評価
-- README(フレームワークの使い方)、OFL ライセンス表記の同梱
-
----
-
-## 6. 想定リスク
-
-| リスク | 影響 | 対策 |
-|---|---|---|
-| **画面回転**: パネルネイティブが縦 720x1280 | 横 UI にソフト回転が必要なら大幅に遅くなる | M0 で最優先確認。PPA ハード回転 or パネル初期化での対処を探る |
-| **PSRAM 帯域**: 1280x720 は大きい | fps が出ない | 部分バッファ(画面の 10〜25%)、内部 SRAM の活用、再描画領域の最小化。フレームワーク側で「変更のあった RenderObject だけ再描画」を効かせる |
-| Widget アリーナのライフタイム管理 | クラッシュ | ダブルバッファ arena + dtor リスト。PC 側で ASan/UBSan を有効にしてテストを回す |
-| LVGL 9.2.2 に PPA 描画がない | 性能不足時の打ち手が限られる | 9.4 への引き上げ余地を残す(`esp_lvgl_port` は lvgl >=8 <10 を許容)。ただし PPA 描画は experimental でティアリングの既知不具合あり |
-| 私(Claude)が実機を持っていない | 見た目の最終確認ができない | シミュレータで詰めきる。実機確認はフラッシュしてもらってスクリーンショットで判断 |
-
----
-
-## 7. ライセンス
-
-- B612 / B612 Mono: **SIL OFL 1.1**(商用組込み・ビットマップ化可)。著作権表示と OFL 全文の同梱が必要 → `licenses/` に配置する。
-- FlyByWire の `HoneywellMCDU.ttf` 等は実機トレース + GPL-3.0 のため**使わない**。
+この判断が済むまでは、既存の source integration、公開 API、consumer test を現在の利用契約として維持する。

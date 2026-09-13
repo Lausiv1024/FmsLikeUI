@@ -1335,6 +1335,61 @@ bash tools/ci/device_build.sh build-ci ci-out/device
 - ローカル検証のスナップショットは、`core.autocrlf=true` の作業ツリーを tar にせず、一時 index に `git add -A` した tree を `git archive` して作った。
   GitHub のチェックアウトと同じ LF の内容になる。
 
+### 2026-09-12: display 単位の画面ブラックアウト
+
+**状態: 実装済み (2026-09-13)。**
+
+FmsLikeUI は FMS アプリケーションではなく、FMS 風 UI を組み立てる汎用 framework である。
+したがって idle timeout の判定、明示的な blank / wake、黒フレーム、入力吸収、refresh と output callback の順序は framework が持ち、
+backlight、LCD controller、touch、BSP は利用側から callback として注入する。
+
+#### 決定
+
+- `FmsApp` に `setIdleTimeout()`、`setOutputOffCallback()`、`setOutputOnCallback()`、`blankDisplay()`、`wakeDisplay()`、
+  `isDisplayBlanked()`、`notifyUserActivity()` を公開する。timeout の単位は ms、`0` は自動 blank 無効とする。
+- `lv_display_get_inactive_time(display)` を使い、LVGL display に関連付けた任意の pointer touch を activity として扱う。
+- 明示的な `wakeDisplay()` も activity として扱い、復帰直後に同じ idle deadline で再消灯しないようにする。
+- blank は active screen の最上位に不透明な黒 `lv_obj` を追加し、通常の Widget / State / Element tree と deferred Layer を維持する。
+- `Awake -> Blanking -> Blanked -> Waking -> Awake` を明示的に管理する。`LV_EVENT_REFR_START` と対応する
+  `LV_EVENT_REFR_READY` の組で対象 refresh を識別し、黒フレームまたは復帰内容の flush 完了後に callback を 1 回だけ呼ぶ。
+- blank 中に到着した `requestFrame()` は dirty flag を保持し、wake 中の frame で最新データを描画する。`shutdown()` は blank overlay と display event callback も安全に解放し、output-off 済みなら output-on callback を呼んで外部出力を復帰させる。
+- 消灯中の最初の pointer tap は `lv_indev_wait_release()` と full-screen overlay で吸収し、wake refresh 後の背後 callback を許可しない。
+- `bsp_display_enter_sleep()` は使わない。完全な panel sleep、external wake source、demo への製品機能追加は今回の対象外とする。
+
+#### 実装チェックリスト
+
+- [x] framework 本体に blank / wake 状態、idle 判定、overlay、callback、activity 通知を実装
+- [x] public API を `fmsui/fmsui.h` から利用できる状態に維持し、ESP-IDF / BSP 型を漏らさない
+- [x] demo を変更せず、既存の UI-thread 所有契約と `shutdown()` を維持
+- [x] 変更を含む host pointer / framebuffer interaction test を通常設定と ASan / UBSan / LeakSanitizer で実行
+- [x] 既存 host CTest 3/3(通常) と 3/3(sanitizer)、既存6 demo の headless 描画を確認
+- [x] `git diff --check` と公開 umbrella header の単独コンパイルを確認
+- [x] 変更を含む host consumer を build / run
+- [x] ESP-IDF consumer の default device configuration を build / flash
+- [x] ESP32-P4 の6 device configurations を再実行
+- [x] 物理 Tab5 の backlight、touch、LCD controller、tap-to-wake を確認
+
+#### 検証結果
+
+- 変更を含む focused host interaction test は通常版・sanitizer 版ともに `175 checks, 0 failures`。LVGL pointer の press / hold / release、任意位置の activity、
+  idle timeout、全画面黒 framebuffer、refresh 後の output-off / output-on、復帰 tap の吸収、State の保持、queued `requestFrame()`、
+  shutdown と再 init を通した。レビューで見つかった、timeout 後の明示 wake が即再消灯しないことと、Blanked / Waking 中の shutdown が output-on を1回呼ぶことも回帰テストに追加した。ASan / UBSan / LeakSanitizer 版も sanitizer 報告は無かった。
+- 既存の host CTest は通常 `3/3`、sanitizer `3/3`。変更後の framework object を用いた6 fixture(`m0`, `m1`, `catalog`, `pages`, `reorder`, `fplan`)の headless PNG は各 `1280x720` で生成できた。
+- `git diff --check` は clean、`components/fmsui/include/fmsui/fmsui.h` は単独コンパイルできた。変更を含む host consumer は
+  `PASS, 0 failure(s)` で、公開 API 経由の build / paint、別 task の `requestFrame()`、pointer tap、font、shutdown を確認した。
+- LVGL submodule を初期化した後、ESP-IDF 5.5.4 の default ESP32-P4 configuration を clean build し、COM7 の Tab5 へ flash できた。
+  アプリ領域は 41%。
+- 一時的な hardware verification hook では、Tab5 の ILI9881C LCD と GT911 touch の初期化、1280x720 描画、約5秒後の黒フレーム後に
+  `bsp_display_backlight_off()` が `ESP_OK` で呼ばれることをシリアルで確認した。手動タップでwakeし、元のUIが正常に再表示されることも実機で確認した。
+  検証用 hook を削除した通常版を再 build / flash 済みで、通常起動と描画もシリアルで確認した。
+- 2026-09-13 のレビュー修正後、idle timeout を10秒にした一時 hook をCOM7の同じTab5へ書き込み、手動タップで復帰した。
+  output-on は起動後 `13705 ms`、次のoutput-offは `23738 ms`で、復帰後 `10033 ms` のactivity期間を維持した。
+  復帰直後の再消灯は再現せず、`wakeDisplay()` のactivityリセットが実機でも有効なことを確認した。検証用 hook は削除し、通常版を再 build / flashした。
+- `FMSUI_WERROR=ON` と `-DIDF_TARGET=esp32p4` を指定し、`tools/idf.bat -B build-ci -DSDKCONFIG=build-ci/sdkconfig -DFMSUI_DEMO=<value> build` を6回実行した。
+  6構成すべて成功し、各ログの `warning:` / `error:` は0件だった。サイズは default `0xddd20` (41% free)、m0 `0xd6780` (43% free)、
+  m1 `0xdf380` (40% free)、catalog `0xe47d0` (39% free)、fplan `0xdc8f0` (41% free)、reorder `0xe0990` (40% free)。
+  `tools/ci/device_build.sh` はこの端末のbashからWindows ESP-IDF Pythonを直接解決できない環境制約で開始前に停止したため、同スクリプトと同じ6構成・引数をWindows batch経由で代替実行した。
+
 ## 計画中・未実装
 
 いまのところ無し。次の判断が決まったらここに書く。

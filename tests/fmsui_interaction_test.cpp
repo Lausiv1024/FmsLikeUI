@@ -127,6 +127,9 @@ public:
 
     ~Session() {
         FmsApp::instance().shutdown();
+        FmsApp::instance().setIdleTimeout(0);
+        FmsApp::instance().setOutputOffCallback({});
+        FmsApp::instance().setOutputOnCallback({});
         lv_indev_delete(indev_);
         lv_display_delete(disp_);
         std::free(fb_);
@@ -168,6 +171,21 @@ public:
     void rebuild() {
         FmsApp::instance().requestFrame();
         settle();
+    }
+
+    void setIdleTimeout(uint32_t timeout_ms) { FmsApp::instance().setIdleTimeout(timeout_ms); }
+
+    void blank() { FmsApp::instance().blankDisplay(); }
+    void wake() { FmsApp::instance().wakeDisplay(); }
+
+    uint32_t inactiveTime() const { return lv_display_get_inactive_time(disp_); }
+
+    bool framebufferBlack() const {
+        const size_t bytes = static_cast<size_t>(kWidth) * kHeight * 2;
+        for (size_t i = 0; i < bytes; i++) {
+            if (fb_[i] != 0) return false;
+        }
+        return true;
     }
 
     lv_obj_t *screen() const { return lv_display_get_screen_active(disp_); }
@@ -252,6 +270,246 @@ bool colorIs(lv_obj_t *o, Color want) {
     if (o == nullptr) return false;
     const lv_color_t got = lv_obj_get_style_text_color(o, LV_PART_MAIN);
     return lv_color_eq(got, lv_color_make(want.r, want.g, want.b));
+}
+
+/* ---- Display blanking -------------------------------------------------- */
+
+FmsThemeData testTheme();
+Widget *themed(Widget *child);
+
+class BlankStateWidget : public StatefulWidget {
+public:
+    BlankStateWidget() = default;
+    FMSUI_WIDGET(BlankStateWidget)
+    StateBase *createState() const override;
+};
+
+class BlankState : public State<BlankStateWidget> {
+public:
+    Widget *build(BuildContext &) override {
+        return new GestureDetector{{
+            .on_tap = [this] {
+                setState([&] { value_++; });
+            },
+            .child = new SizedBox{{
+                .width = 300,
+                .height = 120,
+                .child = new Text{{.text = fmt("STATE %d", value_)}},
+            }},
+        }};
+    }
+
+private:
+    int value_ = 0;
+};
+
+StateBase *BlankStateWidget::createState() const { return new BlankState(); }
+
+void test_display_api_is_safe_before_init() {
+    std::printf("display: calls before init are harmless\n");
+
+    FmsApp &app = FmsApp::instance();
+    app.shutdown();
+    app.setIdleTimeout(0);
+    app.setOutputOffCallback({});
+    app.setOutputOnCallback({});
+    app.blankDisplay();
+    app.wakeDisplay();
+    app.notifyUserActivity();
+
+    CHECK(!app.isDisplayBlanked());
+    CHECK_EQ(app.idleTimeout(), 0);
+}
+
+void test_idle_timeout_waits_for_deadline_and_any_touch_resets_it() {
+    std::printf("display: timeout uses display inactivity, including an empty-screen tap\n");
+
+    Session s([&] { return themed(new Center(new Text{{.text = "IDLE"}})); });
+    s.setIdleTimeout(300);
+
+    s.step(4);
+    CHECK(!FmsApp::instance().isDisplayBlanked());
+
+    /* (4,4) is deliberately not inside a clickable Widget. LVGL still records
+     * the pointer press as display activity, which is the contract we need. */
+    s.tap(4, 4);
+    CHECK(s.inactiveTime() < 300);
+    CHECK(!FmsApp::instance().isDisplayBlanked());
+
+    s.step(4);
+    CHECK(!FmsApp::instance().isDisplayBlanked());
+    s.step(2);
+    CHECK(FmsApp::instance().isDisplayBlanked());
+}
+
+void test_blank_and_wake_wait_for_refresh_and_absorb_first_tap() {
+    std::printf("display: black frame, callbacks and wake-tap absorption\n");
+
+    int key_taps = 0;
+    int output_off = 0;
+    int output_on = 0;
+    bool black_at_output_off = false;
+
+    Session s([&] {
+        return themed(new FmsButton{{
+            .text = "TARGET",
+            .on_tap = [&] { key_taps++; },
+        }});
+    });
+    FmsApp &app = FmsApp::instance();
+    app.setIdleTimeout(0);
+    app.setOutputOffCallback([&] {
+        output_off++;
+        black_at_output_off = s.framebufferBlack();
+    });
+    app.setOutputOnCallback([&] { output_on++; });
+
+    s.blank();
+    CHECK(app.isDisplayBlanked());
+    CHECK_EQ(output_off, 0);  // blanking is not complete until refresh
+    s.step(2);
+    CHECK(app.isDisplayBlanked());
+    CHECK_EQ(output_off, 1);
+    CHECK(black_at_output_off);
+
+    s.blank();
+    s.step(2);
+    CHECK_EQ(output_off, 1);  // repeated request is idempotent
+
+    /* The label remains in the preserved tree, but the full-screen overlay is
+     * the actual hit target. Its first tap wakes only. */
+    app.setIdleTimeout(1000);
+    tapLabel(s, "TARGET");
+    CHECK_EQ(key_taps, 0);
+    CHECK_EQ(output_on, 1);
+    CHECK(!app.isDisplayBlanked());
+    CHECK(s.inactiveTime() < 1000);
+    CHECK(!s.framebufferBlack());
+
+    /* The next real tap reaches the old detector and its callback. */
+    tapLabel(s, "TARGET");
+    CHECK_EQ(key_taps, 1);
+
+    app.wakeDisplay();
+    s.step(2);
+    CHECK_EQ(output_on, 1);  // already awake
+}
+
+void test_explicit_wake_resets_idle_deadline() {
+    std::printf("display: explicit wake restarts the idle deadline\n");
+
+    Session s([&] { return themed(new Center(new Text{{.text = "WAKE"}})); });
+    FmsApp &app = FmsApp::instance();
+    app.setIdleTimeout(100);
+
+    s.step(4);
+    CHECK(app.isDisplayBlanked());
+
+    app.wakeDisplay();
+    s.step(2);
+    CHECK(!app.isDisplayBlanked());
+    CHECK(s.inactiveTime() < 100);
+
+    /* The next Awake frame must not immediately enter Blanking again. */
+    s.step();
+    CHECK(!app.isDisplayBlanked());
+}
+
+void test_shutdown_restores_output_after_blank() {
+    std::printf("display: shutdown restores an output disabled by blanking\n");
+
+    int output_off = 0;
+    int output_on = 0;
+    {
+        Session s([&] { return themed(new Center(new Text{{.text = "SHUTDOWN"}})); });
+        FmsApp &app = FmsApp::instance();
+        app.setOutputOffCallback([&] { output_off++; });
+        app.setOutputOnCallback([&] { output_on++; });
+
+        s.blank();
+        s.step(2);
+        CHECK_EQ(output_off, 1);
+        CHECK_EQ(output_on, 0);
+
+        app.shutdown();
+        CHECK_EQ(output_on, 1);
+        CHECK(!app.isDisplayBlanked());
+    }
+
+    output_off = 0;
+    output_on = 0;
+    {
+        Session s([&] { return themed(new Center(new Text{{.text = "WAKING"}})); });
+        FmsApp &app = FmsApp::instance();
+        app.setOutputOffCallback([&] { output_off++; });
+        app.setOutputOnCallback([&] { output_on++; });
+
+        s.blank();
+        s.step(2);
+        CHECK_EQ(output_off, 1);
+        app.wakeDisplay();
+        CHECK(app.isDisplayBlanked());
+
+        app.shutdown();
+        CHECK_EQ(output_on, 1);
+        CHECK(!app.isDisplayBlanked());
+    }
+}
+
+void test_state_and_latest_request_survive_blank_wake() {
+    std::printf("display: State and a queued request survive blanking\n");
+
+    std::string text = "OLD";
+    Session s([&] { return themed(new Center(new Text{{.text = Str(text)}})); });
+
+    s.blank();
+    s.step(2);
+    CHECK(showing(s, "OLD"));
+
+    text = "NEW";
+    FmsApp::instance().requestFrame();
+    s.step(2);  // blanking must not consume or paint the request
+    CHECK(showing(s, "OLD"));
+
+    s.wake();
+    s.step(3);
+    CHECK(!FmsApp::instance().isDisplayBlanked());
+    CHECK(showing(s, "NEW"));
+}
+
+void test_state_object_is_not_recreated_by_blank_wake() {
+    std::printf("display: State identity survives blank/wake\n");
+
+    Session s([&] { return themed(new BlankStateWidget()); });
+    tapLabel(s, "STATE 0");
+    CHECK(showing(s, "STATE 1"));
+
+    s.blank();
+    s.step(2);
+    s.wake();
+    s.step(3);
+    CHECK(showing(s, "STATE 1"));
+
+    /* A wake does not dispose/recreate the State. The same callback still owns
+     * its counter and can advance it on the next ordinary tap. */
+    tapLabel(s, "STATE 1");
+    CHECK(showing(s, "STATE 2"));
+}
+
+void test_blank_wake_shutdown_and_reinit() {
+    std::printf("display: blank/wake/shutdown can be repeated across init\n");
+
+    {
+        Session s([&] { return themed(new Center(new Text{{.text = "FIRST"}})); });
+        s.blank();
+        s.step(2);
+        s.wake();
+        s.step(2);
+    }
+
+    Session s([&] { return themed(new Center(new Text{{.text = "SECOND"}})); });
+    CHECK(!FmsApp::instance().isDisplayBlanked());
+    CHECK(showing(s, "SECOND"));
 }
 
 /* ---- The theme these tests build against ------------------------------- */
@@ -797,6 +1055,15 @@ void test_the_scratchpad_shows_entry_then_message_then_error() {
 
 int main() {
     lv_init();
+
+    test_display_api_is_safe_before_init();
+    test_idle_timeout_waits_for_deadline_and_any_touch_resets_it();
+    test_blank_and_wake_wait_for_refresh_and_absorb_first_tap();
+    test_explicit_wake_resets_idle_deadline();
+    test_shutdown_restores_output_after_blank();
+    test_state_and_latest_request_survive_blank_wake();
+    test_state_object_is_not_recreated_by_blank_wake();
+    test_blank_wake_shutdown_and_reinit();
 
     test_a_tap_is_one_press_one_release_and_one_tap();
     test_a_detector_without_callbacks_lets_the_touch_through();

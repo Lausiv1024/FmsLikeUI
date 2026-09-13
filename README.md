@@ -190,7 +190,7 @@ MSBuild になる・`$ENV{IDF_PATH}` 次第で別の ESP-IDF が読まれる、�
 | [docs/DECISIONS.md](docs/DECISIONS.md) | 採用した設計判断と、その実装状況 |
 | [docs/PERF.md](docs/PERF.md) | 実機の実測値と最適化(失敗した実験も) |
 | [docs/M0-NOTES.md](docs/M0-NOTES.md) | ブリングアップで判明した事実(IDF/BSP/COM ポート等) |
-| [docs/PLAN.md](docs/PLAN.md) | 当初の計画 |
+| [docs/PLAN.md](docs/PLAN.md) | 現在地と今後のロードマップ。次期の配布・互換性方針を含む |
 
 ## フォント
 

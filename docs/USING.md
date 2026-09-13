@@ -114,6 +114,7 @@ LVGL の ESP-IDF 用ビルドは、`LV_KCONFIG_IGNORE` を付けてもこの 2 �
 | フォント | `FmsThemeData::font` の 5 段(`unit` / `label` / `body` / `value` / `title`)に `lv_font_t` を入れる。`fmsui_fonts` の B612 Mono は任意です。`Text` の `font` を省くと `LV_FONT_DEFAULT` になります |
 | マイクロ秒クロック(任意) | `FmsApp::setClock()`。無ければ統計の時間は LVGL の tick(ミリ秒)から取ります |
 | スレッドの識別子(推奨) | `FmsApp::setThreadId()`。無ければ、別スレッドからの `setState()` を検出する assert が無効になります |
+| 画面消灯の実機制御 | `setOutputOffCallback()` / `setOutputOnCallback()` にバックライト等の処理を渡す。LVGL の display、LCD controller、touch は利用側が所有します |
 | ボード | BSP、パネル、タッチ、回転、PPA、PSRAM などの `sdkconfig`。フレームワークはどれも持ちません |
 
 フレームワークの側が持つのは次のものです。
@@ -182,6 +183,42 @@ lv_display_delete(display);    // shutdown() の後で
    シミュレータとテストは、LeakSanitizer に報告を残さないために呼んでいます。
 
 `FmsApp` はプロセスに 1 つです。`shutdown()` の後に、もう一度 `init()` できます。
+
+## 画面消灯
+
+画面消灯は Widget / State / Element tree を破棄せず、active screen の最上位に不透明な黒オーバーレイを置いて行います。
+通常の描画と同じ LVGL display を使い、黒フレームの refresh が完了してから `output-off` callback を呼びます。
+復帰時はオーバーレイを透明にして通常内容を再描画し、その refresh 完了後に `output-on` callback を呼びます。
+したがって callback は `lv_timer_handler()` を実行しているスレッドで、flush 完了後に 1 回だけ呼ばれます。
+
+```cpp
+auto &app = fmsui::FmsApp::instance();
+app.setIdleTimeout(30'000);  // ms。0 は自動消灯を無効にする
+app.setOutputOffCallback([] {
+    // 実機側: bsp_display_backlight_off();
+});
+app.setOutputOnCallback([] {
+    // 実機側: bsp_display_backlight_on();
+});
+
+// UI スレッド上の明示操作
+app.blankDisplay();
+app.wakeDisplay();
+bool unavailable = app.isDisplayBlanked();
+app.notifyUserActivity();  // 外部入力を利用側が受けた場合の idle リセット
+```
+
+`setIdleTimeout()` の判定には `lv_display_get_inactive_time(display)` を使います。LVGL に display を関連付けた pointer input は、
+クリック可能な Widget だけでなく任意の画面タッチを activity として扱います。`blankDisplay()` / `wakeDisplay()` は LVGL と同じ UI スレッドから呼び、
+別 task からはデータを公開して `requestFrame()` を呼んでください。明示的な `wakeDisplay()` も activity として idle deadline を最初から数え直します。
+`0` は自動消灯だけを無効にし、明示的な `blankDisplay()` は無効にしません。
+
+消灯中の最初の pointer tap は復帰専用として吸収されます。押下された pointer は release までオーバーレイが保持するため、背後の callback は実行されません。
+復帰後の次の tap から通常の hit test に戻ります。`isDisplayBlanked()` は `Blanking` / `Blanked` / `Waking` の遷移中も `true` です。
+
+`bsp_display_enter_sleep()` や完全な panel sleep は framework の対象外です。touch と LCD controller は動作したままにし、
+実機固有の backlight / controller 操作を callback に注入してください。
+output-off callback が実行済みの状態で `shutdown()` した場合は、外部出力をOFFのまま残さないよう output-on callback を1回呼びます。
 
 ESP-IDF で `esp_lvgl_port` を使う場合、LVGL は port が作るタスクで走ります。`runApp()` などの LVGL に触る呼び出しは
 `bsp_display_lock()` / `lvgl_port_lock()` の中で行ってください(このリポジトリの `main/main.cpp` の形)。

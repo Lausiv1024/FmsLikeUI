@@ -158,6 +158,19 @@ public:
      * runs your mutation immediately, on the calling task, racing the build. */
     void requestFrame();
 
+    /* Display blanking is a framework concern, but the actual panel/backlight
+     * operation belongs to the application.  These callbacks run on the same
+     * thread as lv_timer_handler(), after the corresponding refresh has
+     * completed. */
+    void setIdleTimeout(uint32_t timeout_ms);
+    uint32_t idleTimeout() const;
+    void setOutputOffCallback(VoidCallback callback);
+    void setOutputOnCallback(VoidCallback callback);
+    void blankDisplay();
+    void wakeDisplay();
+    bool isDisplayBlanked() const;
+    void notifyUserActivity();
+
     /* A requester that can be poked from an IRAM interrupt handler. Fetch it
      * during setup; see FrameRequester. */
     FrameRequester requester();
